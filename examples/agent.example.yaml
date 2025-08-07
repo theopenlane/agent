@@ -1,0 +1,53 @@
+# Openlane Agent Configuration Example
+
+# API connection settings
+api_key: "${OPENLANE_API_KEY}"
+api_url: "https://api.openlane.io"
+
+# Agent identification
+agent_name: "production-compliance-agent"
+
+# Logging and execution settings
+log_level: "info"
+data_dir: "./data"
+poll_interval: "1m"
+max_concurrency: 3
+default_timeout: "5m"
+
+# Compliance checks to run
+checks:
+  # AWS IAM Security Check
+  - name: "aws-iam-compliance"
+    description: "Check AWS IAM configuration for security compliance"
+    command: "./scripts/check-aws-iam.sh"
+    schedule: "0 */4 * * *"           # Every 4 hours
+    timeout: "10m"
+    enabled: true
+    env:
+      - "AWS_REGION=us-east-1"
+      - "MAX_KEY_AGE_DAYS=90"
+      - "REQUIRE_MFA=true"
+    controls:
+      - "SOC2:CC6.1"
+      - "ISO27001:A.9.2.1"
+    tags:
+      - "aws"
+      - "iam"
+      - "critical"
+
+  # GitHub Organization Audit
+  - name: "github-org-audit" 
+    description: "Audit GitHub organization security settings"
+    command: "python3"
+    args: ["./scripts/check-github-org.py"]
+    schedule: "0 2 * * *"             # Daily at 2 AM
+    timeout: "5m"
+    enabled: true
+    env:
+      - "GITHUB_TOKEN=${GITHUB_TOKEN}"
+      - "GITHUB_ORG=${GITHUB_ORG}"
+    controls:
+      - "SOC2:CC6.3"
+    tags:
+      - "github"
+      - "access-control"

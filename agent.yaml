@@ -1,0 +1,56 @@
+registration_token: ${OPENLANE_REGISTRATION_TOKEN}
+api_url: https://api.theopenlane.io
+agent_name: production-compliance-agent
+log_level: info
+data_dir: ./data
+poll_interval: 1m0s
+spawn: 1
+max_concurrency: 3
+default_timeout: 5m0s
+checks:
+    - name: aws-iam-compliance
+      description: Check AWS IAM configuration for compliance issues
+      command: ./scripts/check-aws-iam.sh
+      env:
+        - AWS_REGION=us-east-1
+      schedule: 0 */4 * * *
+      timeout: 10m0s
+      controls:
+        - SOC2:CC6.1
+        - ISO27001:A.9.2.1
+      tags:
+        - aws
+        - iam
+        - critical
+      enabled: true
+      continue_on_error: false
+    - name: github-audit
+      description: Audit GitHub organization settings
+      command: python3
+      args:
+        - ./scripts/github-audit.py
+        - --org
+        - mycompany
+      env:
+        - GITHUB_TOKEN=${GITHUB_TOKEN}
+      schedule: 0 0 * * *
+      timeout: 5m0s
+      controls:
+        - SOC2:CC6.3
+      tags:
+        - github
+        - access-control
+      enabled: true
+      continue_on_error: false
+    - name: database-compliance
+      description: Check database security settings
+      command: ./scripts/check-database.rb
+      schedule: '*/30 * * * *'
+      timeout: 2m0s
+      controls:
+        - PCI-DSS:8.2
+      tags:
+        - database
+        - security
+      enabled: false
+      continue_on_error: false

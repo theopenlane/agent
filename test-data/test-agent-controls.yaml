@@ -1,0 +1,68 @@
+registration_token: ${OPENLANE_REGISTRATION_TOKEN}
+api_url: https://api.theopenlane.io
+agent_name: test-control-sync-agent
+log_level: debug
+data_dir: ./test-data
+poll_interval: 1m0s
+spawn: 1
+max_concurrency: 2
+default_timeout: 5m0s
+checks:
+  - name: test-control-validation
+    description: Test various control formats and validation
+    command: ./test-data/scripts/test-check.sh
+    env:
+      - TEST_MODE=validation
+    schedule: "*/5 * * * *"
+    timeout: 2m0s
+    controls:
+      - SOC2:CC6.1        # Valid SOC2 control
+      - ISO27001:A.9.2.1  # Valid ISO27001 control  
+      - PCI-DSS:8.2       # Valid PCI-DSS control
+      - NIST:AC-01        # Valid NIST control
+      - GDPR:Art.32       # Valid GDPR control
+      - HIPAA:164.312(a)(1) # Valid HIPAA control
+      - CUSTOM:SEC-001    # Custom framework (should generate warning)
+    tags:
+      - testing
+      - validation
+    enabled: true
+    continue_on_error: false
+    
+  - name: test-invalid-controls
+    description: Test invalid control formats
+    command: ./test-data/scripts/test-check.sh
+    env:
+      - TEST_MODE=invalid
+    schedule: "0 */6 * * *"
+    timeout: 1m0s
+    controls:
+      - InvalidFormat     # Missing colon separator
+      - "SOC2:"          # Missing control ID
+      - ":CC6.1"         # Missing framework
+      - "SOC2:INVALID123" # Invalid control format
+    tags:
+      - testing
+      - error-cases
+    enabled: false
+    continue_on_error: true
+
+  - name: test-mixed-controls
+    description: Test mixture of valid and edge case controls
+    command: ./test-data/scripts/test-check.sh
+    env:
+      - TEST_MODE=mixed
+    schedule: "0 0 * * 0"
+    timeout: 3m0s
+    controls:
+      - SOC2:CC1.1       # Valid
+      - soc2:cc2.1       # Valid but lowercase (should be normalized)
+      - ISO27001:A.8.1.1 # Valid
+      - PCI-DSS:1.1.1    # Valid
+      - "NIST:SC-7"      # Valid with quotes
+      - FRAMEWORK:CTRL   # Unknown framework (warning)
+    tags:
+      - testing
+      - mixed-cases
+    enabled: true
+    continue_on_error: false
