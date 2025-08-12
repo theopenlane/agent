@@ -278,7 +278,7 @@ func (w *AgentWorker) executeScheduledJob(ctx context.Context, scheduledJob *ope
 	w.logger.Info().Str("job_id", scheduledJob.ID).Msg("Starting remote job")
 
 	// Create a check controller
-	controller := NewComplianceCheckController(w.logger, w.apiClient, w.agentInfo.ID)
+	controller := NewComplianceCheckController(w.logger, w.apiClient, w.agentInfo.ID, nil)
 
 	// Add to active checks
 	w.stateMtx.Lock()
@@ -355,7 +355,7 @@ func (w *AgentWorker) executeLocalCheck(ctx context.Context, check *config.Check
 	w.logger.Info().Str("check", check.Name).Msg("Starting local check")
 
 	// Create a check controller
-	controller := NewComplianceCheckController(w.logger, w.apiClient, w.agentInfo.ID)
+	controller := NewComplianceCheckController(w.logger, w.apiClient, w.agentInfo.ID, nil)
 
 	// Add to active checks
 	w.stateMtx.Lock()

@@ -1,0 +1,290 @@
+version: "3"
+
+includes:
+  core:
+    taskfile: /Users/manderson/core/Taskfile.yaml
+    dir: /Users/manderson/core
+
+env:
+  OPENLANE_API_HOST: "http://localhost:17608"
+  AGENT_CONFIG_FILE: "agent-test.yaml"
+  AGENT_USER_EMAIL: "agent-test@theopenlane.io"
+  AGENT_DATA_DIR: "./data"
+  AGENT_LOG_LEVEL: "debug"
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list
+
+  # === Build Tasks ===
+  build:
+    desc: Build the agent binary
+    cmds:
+      - go build -mod=mod -o bin/openlane-agent ./cmd/agent
+
+  build:all:
+    desc: Build all binaries
+    cmds:
+      - task: build
+      - go build -mod=mod -o bin/schema-gen ./cmd/schema
+      - go build -mod=mod -o bin/validate-config ./cmd/validate-config
+
+  # === Configuration Tasks ===
+  config:generate:
+    desc: Generate JSON Schema for agent configuration
+    cmds:
+      - go run cmd/schema/main.go agent-config-schema.json
+      - echo "JSON Schema generated at agent-config-schema.json"
+
+  config:validate:
+    desc: Validate agent configuration file
+    cmds:
+      - go run cmd/validate-config/main.go {{.CONFIG_FILE | default .AGENT_CONFIG_FILE}}
+
+  config:example:
+    desc: Create example configuration file
+    cmds:
+      - cp agent-example.yaml {{.AGENT_CONFIG_FILE}}
+      - echo "Example configuration copied to {{.AGENT_CONFIG_FILE}}"
+
+  # === Testing Tasks ===
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./... -v
+
+  test:config:
+    desc: Run configuration tests
+    cmds:
+      - go test ./internal/config -v
+
+  test:integration:
+    desc: Run integration tests with a real server
+    deps: [server:check]
+    cmds:
+      - task: setup:complete
+      - task: agent:run:check
+      - task: verify:execution
+      - echo "✓ Integration tests completed successfully!"
+
+  # === Server Management ===
+  server:check:
+    desc: Check if Openlane server is running
+    cmds:
+      - curl -f {{.OPENLANE_API_HOST}}/livez || (echo "Server not running. Please start the server first." && exit 1)
+
+  # === User and Token Setup ===
+  setup:user:
+    desc: Register and setup agent user
+    dir: /Users/manderson/core
+    cmds:
+      - task: cli:user:register
+        vars:
+          EMAIL_ADDRESS: "{{.AGENT_USER_EMAIL}}"
+      - task: cli:user:login
+        vars:
+          EMAIL_ADDRESS: "{{.AGENT_USER_EMAIL}}"
+      - task: cli:org:create
+        vars:
+          ORG_NAME: "agent-test-org"
+
+  setup:token:
+    desc: Create agent registration token
+    dir: /Users/manderson/core
+    vars:
+      ORG_ID:
+        sh: cd /Users/manderson/core && task cli:org:get
+    cmds:
+      - task: cli:token:create
+        vars:
+          ORG_ID: "{{.ORG_ID}}"
+      - echo "Token created successfully"
+
+  setup:token:get:
+    desc: Get the agent registration token
+    dir: /Users/manderson/core
+    env:
+      CORE_PASSWORD: mattisthebest1234
+    cmds:
+      - go run cmd/cli/main.go login -u {{.AGENT_USER_EMAIL}}
+      - go run cmd/cli/main.go pat get -z json | jq -r '.personalAccessTokens.edges[-1].node.token'
+
+  setup:config:
+    desc: Create agent configuration with token
+    vars:
+      TOKEN:
+        sh: cd /Users/manderson/core && task setup:token:get AGENT_USER_EMAIL={{.AGENT_USER_EMAIL}}
+    cmds:
+      - |
+        cat > {{.AGENT_CONFIG_FILE}} << EOF
+        registrationToken: "{{.TOKEN}}"
+        apiUrl: "{{.OPENLANE_API_HOST}}"
+        agentName: "test-compliance-agent"
+        logLevel: "{{.AGENT_LOG_LEVEL}}"
+        dataDir: "{{.AGENT_DATA_DIR}}"
+        pollInterval: "10s"
+        spawn: 1
+        maxConcurrency: 2
+        defaultTimeout: "5m"
+
+        evidence:
+          enabled: true
+          retentionPeriod: "24h"
+          maxFileSize: 10485760
+          compressFiles: false
+
+        checks:
+          - name: "test-disk-check"
+            description: "Test disk encryption check"
+            command: "./scripts/check-disk-encryption.sh"
+            schedule: "*/1 * * * *"
+            timeout: "1m"
+            controls:
+              - "TEST:001"
+              - "TEST:002"
+            tags:
+              - "test"
+              - "disk"
+            enabled: true
+            evidencePaths:
+              - "./evidence/test-disk-check/"
+            onPass:
+              uploadEvidence: true
+              updateControlStatus: true
+            onFail:
+              uploadEvidence: true
+              updateControlStatus: true
+              commands:
+                - name: "log-failure"
+                  command: "echo"
+                  args: ["Disk encryption check failed"]
+                  timeout: "10s"
+        EOF
+      - echo "Configuration file created at {{.AGENT_CONFIG_FILE}}"
+
+  setup:complete:
+    desc: Complete setup for agent testing
+    cmds:
+      - task: setup:user
+      - task: setup:token
+      - task: setup:config
+      - mkdir -p {{.AGENT_DATA_DIR}}
+      - mkdir -p ./evidence
+      - echo "✓ Agent setup completed!"
+
+  # === Agent Execution ===
+  agent:run:
+    desc: Run the agent with test configuration
+    deps: [build]
+    cmds:
+      - ./bin/openlane-agent start -c {{.AGENT_CONFIG_FILE}}
+
+  agent:run:check:
+    desc: Run a single check immediately
+    deps: [build]
+    cmds:
+      - ./bin/openlane-agent start -c {{.AGENT_CONFIG_FILE}} --run-once "test-disk-check"
+
+  agent:run:debug:
+    desc: Run agent in debug mode
+    deps: [build]
+    env:
+      OPENLANE_AGENT_LOG_LEVEL: debug
+    cmds:
+      - ./bin/openlane-agent start -c {{.AGENT_CONFIG_FILE}} -D
+
+  # === Work Queue Management ===
+  queue:job:
+    desc: Queue a job for the agent (placeholder - would use API)
+    cmds:
+      - echo "This would queue a job via the Openlane API"
+      - echo "For now, the agent will execute local checks based on the schedule"
+
+  # === Verification Tasks ===
+  verify:token:
+    desc: Verify the registration token is valid
+    vars:
+      TOKEN:
+        sh: cd /Users/manderson/core && task setup:token:get AGENT_USER_EMAIL={{.AGENT_USER_EMAIL}}
+    cmds:
+      - |
+        curl -H "Authorization: Bearer {{.TOKEN}}" {{.OPENLANE_API_HOST}}/v1/users/me | jq '.' || \
+        (echo "Token verification failed" && exit 1)
+
+  verify:execution:
+    desc: Verify agent executed checks and created evidence
+    cmds:
+      - test -d {{.AGENT_DATA_DIR}}/evidence || (echo "No evidence directory found" && exit 1)
+      - ls -la {{.AGENT_DATA_DIR}}/evidence/
+      - echo "✓ Evidence files created successfully"
+
+  # === Cleanup Tasks ===
+  clean:data:
+    desc: Clean agent data directory
+    cmds:
+      - rm -rf {{.AGENT_DATA_DIR}}
+      - rm -rf ./evidence
+      - echo "Agent data cleaned"
+
+  clean:config:
+    desc: Clean test configuration
+    cmds:
+      - rm -f {{.AGENT_CONFIG_FILE}}
+      - rm -f agent-config-schema.json
+      - echo "Configuration files cleaned"
+
+  clean:all:
+    desc: Clean all test artifacts
+    cmds:
+      - task: clean:data
+      - task: clean:config
+      - rm -rf ./bin
+      - echo "All artifacts cleaned"
+
+  # === Development Workflow ===
+  dev:setup:
+    desc: One-time development setup
+    cmds:
+      - go mod download
+      - go mod tidy
+      - task: build:all
+      - task: config:generate
+      - echo "✓ Development environment ready"
+
+  dev:test:
+    desc: Run a complete development test cycle
+    cmds:
+      - task: clean:all
+      - task: server:check
+      - task: build
+      - task: test:integration
+      - echo "✓ Development test cycle completed"
+
+  # === Demo Tasks ===
+  demo:prepare:
+    desc: Prepare for a demo
+    cmds:
+      - task: clean:all
+      - task: build:all
+      - task: setup:complete
+      - echo "✓ Demo environment prepared"
+
+  demo:run:
+    desc: Run a live demo
+    cmds:
+      - echo "Starting Openlane Agent Demo..."
+      - echo "Configuration: {{.AGENT_CONFIG_FILE}}"
+      - echo "API Host: {{.OPENLANE_API_HOST}}"
+      - echo ""
+      - task: agent:run
+
+  # === Quick Start ===
+  quickstart:
+    desc: Quick start for new users
+    cmds:
+      - task: server:check
+      - task: dev:setup
+      - task: setup:complete
+      - task: demo:run

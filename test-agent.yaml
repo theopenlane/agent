@@ -1,0 +1,43 @@
+registrationToken: "tolp_agPasbhJHDB2ztIeT807Nf5LnxExfEXvYkTq6Qq4AyWcX3Bh2DgaHmUPhyoMoC3V"
+apiUrl: "http://localhost:17608"
+agentName: "test-compliance-agent"
+logLevel: "debug"
+dataDir: "./data"
+pollInterval: "10s"
+spawn: 1
+maxConcurrency: 2
+defaultTimeout: "5m"
+
+evidence:
+  enabled: true
+  retentionPeriod: "24h"
+  maxFileSize: 10485760
+  compressFiles: false
+
+checks:
+  - name: "local-security-scan" 
+    description: "Test security scan"
+    command: "echo"
+    args: ["Testing compliance check execution"]
+    schedule: "*/1 * * * *"
+    timeout: "30s"
+    controls:
+      - "TEST:001"
+      - "TEST:002" 
+    tags:
+      - "test"
+      - "security"
+    enabled: true
+    evidencePaths:
+      - "./evidence/test/"
+    onPass:
+      uploadEvidence: true
+      updateControlStatus: true
+    onFail:
+      uploadEvidence: true
+      updateControlStatus: true
+      commands:
+        - name: "log-failure"
+          command: "echo"
+          args: ["Security scan failed"]
+          timeout: "10s"

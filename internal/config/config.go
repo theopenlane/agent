@@ -1,80 +1,129 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/invopop/jsonschema"
+	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/env"
+	"github.com/knadh/koanf/providers/file"
+	"github.com/knadh/koanf/v2"
+	"github.com/mcuadros/go-defaults"
+	jsonschemavalidator "github.com/santhosh-tekuri/jsonschema/v5"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // Config represents the agent configuration loaded from agent.yaml
 type Config struct {
-	// API connection settings (following Buildkite pattern)
-	RegistrationToken string `yaml:"registration_token" json:"registration_token"`
-	APIURL            string `yaml:"api_url" json:"api_url"`
+	// API connection settings
+	RegistrationToken string `json:"registrationToken" koanf:"registrationToken" jsonschema:"required" sensitive:"true" description:"Token used to register with the Openlane platform"`
+	APIURL            string `json:"apiUrl" koanf:"apiUrl" default:"https://api.openlane.io" description:"Base URL for the Openlane API"`
 
 	// Agent identification
-	AgentID   string `yaml:"agent_id,omitempty" json:"agent_id,omitempty"`
-	AgentName string `yaml:"agent_name,omitempty" json:"agent_name,omitempty"`
+	AgentID   string `json:"agentId,omitempty" koanf:"agentId" description:"Unique identifier for this agent instance"`
+	AgentName string `json:"agentName,omitempty" koanf:"agentName" description:"Human-readable name for this agent"`
 
 	// Global settings
-	LogLevel     string        `yaml:"log_level" json:"log_level"`
-	DataDir      string        `yaml:"data_dir" json:"data_dir"`
-	PollInterval time.Duration `yaml:"poll_interval" json:"poll_interval"`
+	LogLevel     string        `json:"logLevel" koanf:"logLevel" default:"info" description:"Log level (debug, info, warn, error)"`
+	DataDir      string        `json:"dataDir" koanf:"dataDir" default:"./data" description:"Directory for storing agent data"`
+	PollInterval time.Duration `json:"pollInterval" koanf:"pollInterval" default:"1m" description:"Interval for polling the platform for work"`
 
-	// Execution settings (following Buildkite pattern)
-	Spawn          int           `yaml:"spawn" json:"spawn"`
-	MaxConcurrency int           `yaml:"max_concurrency" json:"max_concurrency"`
-	DefaultTimeout time.Duration `yaml:"default_timeout" json:"default_timeout"`
+	// Execution settings
+	Spawn          int           `json:"spawn" koanf:"spawn" default:"1" description:"Number of worker processes to spawn"`
+	MaxConcurrency int           `json:"maxConcurrency" koanf:"maxConcurrency" default:"3" description:"Maximum number of concurrent check executions"`
+	DefaultTimeout time.Duration `json:"defaultTimeout" koanf:"defaultTimeout" default:"5m" description:"Default timeout for check execution"`
 
-	// Compliance checks to run (will be mostly managed remotely)
-	Checks []Check `yaml:"checks" json:"checks"`
+	// Evidence settings
+	Evidence EvidenceConfig `json:"evidence" koanf:"evidence" description:"Evidence collection and retention configuration"`
+
+	// Compliance checks to run locally
+	Checks []Check `json:"checks" koanf:"checks" description:"Local compliance checks to execute"`
+}
+
+// EvidenceConfig configures evidence collection and retention
+type EvidenceConfig struct {
+	Enabled         bool          `json:"enabled" koanf:"enabled" default:"true" description:"Enable evidence collection"`
+	RetentionPeriod time.Duration `json:"retentionPeriod" koanf:"retentionPeriod" default:"30d" description:"How long to retain evidence files"`
+	MaxFileSize     int64         `json:"maxFileSize" koanf:"maxFileSize" default:"104857600" description:"Maximum evidence file size in bytes (100MB default)"`
+	CompressFiles   bool          `json:"compressFiles" koanf:"compressFiles" default:"false" description:"Compress evidence files to save space"`
 }
 
 // Check represents a single compliance check configuration
 type Check struct {
 	// Basic info
-	Name        string `yaml:"name" json:"name"`
-	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	Name        string `json:"name" koanf:"name" jsonschema:"required" description:"Unique name for this check"`
+	Description string `json:"description,omitempty" koanf:"description" description:"Human-readable description of what this check validates"`
 
 	// Execution details
-	Command string   `yaml:"command" json:"command"`
-	Args    []string `yaml:"args,omitempty" json:"args,omitempty"`
-	WorkDir string   `yaml:"work_dir,omitempty" json:"work_dir,omitempty"`
+	Command string   `json:"command" koanf:"command" jsonschema:"required" description:"Command to execute for this check"`
+	Args    []string `json:"args,omitempty" koanf:"args" description:"Arguments to pass to the command"`
+	WorkDir string   `json:"workDir,omitempty" koanf:"workDir" description:"Working directory for command execution"`
 
 	// Environment variables
-	Env []string `yaml:"env,omitempty" json:"env,omitempty"`
+	Env []string `json:"env,omitempty" koanf:"env" description:"Environment variables for command execution"`
 
 	// Scheduling
-	Schedule string        `yaml:"schedule" json:"schedule"`
-	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	Schedule string        `json:"schedule" koanf:"schedule" jsonschema:"required" description:"Cron expression for when to run this check"`
+	Timeout  time.Duration `json:"timeout" koanf:"timeout" default:"5m" description:"Timeout for this check execution"`
 
 	// Compliance context
-	Controls []string `yaml:"controls,omitempty" json:"controls,omitempty"`
-	Tags     []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Controls []string `json:"controls,omitempty" koanf:"controls" description:"Compliance controls this check validates"`
+	Tags     []string `json:"tags,omitempty" koanf:"tags" description:"Tags for categorizing and filtering checks"`
 
 	// Execution options
-	Enabled         bool `yaml:"enabled" json:"enabled"`
-	ContinueOnError bool `yaml:"continue_on_error" json:"continue_on_error"`
+	Enabled         bool `json:"enabled" koanf:"enabled" default:"true" description:"Whether this check is enabled"`
+	ContinueOnError bool `json:"continueOnError" koanf:"continueOnError" default:"false" description:"Continue executing other checks if this one fails"`
 
-	// Last execution tracking (not persisted)
-	LastRun    time.Time `yaml:"-" json:"last_run,omitempty"`
-	LastResult *Result   `yaml:"-" json:"last_result,omitempty"`
+	// Evidence collection
+	EvidencePaths []string `json:"evidencePaths,omitempty" koanf:"evidencePaths" description:"File paths or directories to collect as evidence"`
+
+	// Pass/Fail behavior configuration
+	OnPass *ActionConfig `json:"onPass,omitempty" koanf:"onPass" description:"Actions to execute when check passes"`
+	OnFail *ActionConfig `json:"onFail,omitempty" koanf:"onFail" description:"Actions to execute when check fails"`
+
+	// Runtime tracking (not persisted)
+	LastRun    time.Time `json:"-" koanf:"-"`
+	LastResult *Result   `json:"-" koanf:"-"`
+}
+
+// ActionConfig defines actions to take on pass/fail scenarios
+type ActionConfig struct {
+	// Upload evidence to controls
+	UploadEvidence bool `json:"uploadEvidence" koanf:"uploadEvidence" default:"false" description:"Upload collected evidence to associated controls"`
+
+	// Commands to execute
+	Commands []ActionCommand `json:"commands,omitempty" koanf:"commands" description:"Commands to execute for this outcome"`
+
+	// Control status updates
+	UpdateControlStatus bool `json:"updateControlStatus" koanf:"updateControlStatus" default:"false" description:"Update control status based on check result"`
+}
+
+// ActionCommand represents a command to execute on pass/fail
+type ActionCommand struct {
+	Name            string        `json:"name" koanf:"name" jsonschema:"required" description:"Unique name for this action"`
+	Command         string        `json:"command" koanf:"command" jsonschema:"required" description:"Command to execute"`
+	Args            []string      `json:"args,omitempty" koanf:"args" description:"Arguments to pass to the command"`
+	WorkDir         string        `json:"workDir,omitempty" koanf:"workDir" description:"Working directory for command execution"`
+	Env             []string      `json:"env,omitempty" koanf:"env" description:"Environment variables for command execution"`
+	Timeout         time.Duration `json:"timeout,omitempty" koanf:"timeout" default:"1m" description:"Timeout for command execution"`
+	ContinueOnError bool          `json:"continueOnError" koanf:"continueOnError" default:"false" description:"Continue with other actions if this command fails"`
 }
 
 // Result represents the output from a compliance check
 type Result struct {
 	// Execution metadata
-	CheckName      string    `json:"check_name"`
-	ScheduledJobID string    `json:"scheduled_job_id"`
-	ExecutedAt     time.Time `json:"executed_at"`
-	StartTime      time.Time `json:"start_time"`
-	EndTime        time.Time `json:"end_time"`
+	CheckName      string    `json:"checkName"`
+	ScheduledJobID string    `json:"scheduledJobId,omitempty"`
+	ExecutedAt     time.Time `json:"executedAt"`
+	StartTime      time.Time `json:"startTime"`
+	EndTime        time.Time `json:"endTime"`
 	Duration       string    `json:"duration"`
-	ExitCode       int       `json:"exit_code"`
+	ExitCode       int       `json:"exitCode"`
 
 	// Compliance findings
 	Findings []Finding `json:"findings"`
@@ -93,16 +142,19 @@ type Result struct {
 	Controls []string `json:"controls,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
 
-	// File reference for result storage
-	ResultFileID string `json:"result_file_id,omitempty"`
+	// Evidence file upload results
+	EvidenceFiles []*EvidenceFileResult `json:"evidenceFiles,omitempty"`
+
+	// Overall pass/fail status
+	Passed bool `json:"passed"`
 }
 
 // Finding represents a single compliance finding
 type Finding struct {
 	// Resource identification
 	Resource     string `json:"resource"`
-	ResourceType string `json:"resource_type,omitempty"`
-	ResourceID   string `json:"resource_id,omitempty"`
+	ResourceType string `json:"resourceType,omitempty"`
+	ResourceID   string `json:"resourceId,omitempty"`
 
 	// Finding details
 	Title       string          `json:"title"`
@@ -118,7 +170,7 @@ type Finding struct {
 	References  []string `json:"references,omitempty"`
 
 	// Control mappings
-	Controls []ControlMapping `json:"control_mappings,omitempty"`
+	Controls []ControlMapping `json:"controlMappings,omitempty"`
 }
 
 // FindingSeverity represents the severity level of a finding
@@ -146,139 +198,238 @@ const (
 // ControlMapping maps a finding to compliance controls
 type ControlMapping struct {
 	Framework string `json:"framework"`
-	ControlID string `json:"control_id"`
+	ControlID string `json:"controlId"`
 	Satisfied bool   `json:"satisfied"`
 	Notes     string `json:"notes,omitempty"`
 }
 
-// DefaultConfig returns a default agent configuration
-func DefaultConfig() *Config {
-	return &Config{
-		APIURL:         "https://api.openlane.io",
-		LogLevel:       "info",
-		DataDir:        "./data",
-		PollInterval:   1 * time.Minute,
-		MaxConcurrency: 3,
-		DefaultTimeout: 5 * time.Minute,
-		Checks:         []Check{},
-	}
+// EvidenceFileResult represents the result of uploading an evidence file
+type EvidenceFileResult struct {
+	FilePath    string            `json:"filePath"`
+	FileID      string            `json:"fileId"`
+	ControlID   string            `json:"controlId"`
+	Size        int64             `json:"size"`
+	ContentType string            `json:"contentType"`
+	Checksum    string            `json:"checksum"`
+	UploadedAt  time.Time         `json:"uploadedAt"`
+	Error       string            `json:"error,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
-// LoadConfig loads configuration from a YAML file
-func LoadConfig(path string) (*Config, error) {
+// DefaultConfig returns a default agent configuration
+func DefaultConfig() *Config {
+	config := &Config{}
+	defaults.SetDefaults(config)
+	return config
+}
+
+// LoadConfig loads configuration from a file with environment variable overrides
+func LoadConfig(configPath string) (*Config, error) {
+	// Create koanf instance
+	k := koanf.New(".")
+	
 	// Start with defaults
 	config := DefaultConfig()
-
-	// Read file
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
+	
+	// Load from file if it exists
+	if configPath != "" {
+		if _, err := os.Stat(configPath); err == nil {
+			if err := k.Load(file.Provider(configPath), yaml.Parser()); err != nil {
+				return nil, fmt.Errorf("failed to load config file %s: %w", configPath, err)
+			}
+		}
 	}
-
-	// Expand environment variables
-	expanded := os.ExpandEnv(string(data))
-
-	// Parse YAML
-	if err := yaml.Unmarshal([]byte(expanded), config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+	
+	// Load environment variables with OPENLANE_AGENT_ prefix
+	if err := k.Load(env.Provider("OPENLANE_AGENT_", ".", func(s string) string {
+		// Convert OPENLANE_AGENT_API_URL to apiUrl (simple lowercase conversion)
+		return strings.ToLower(s)
+	}), nil); err != nil {
+		return nil, fmt.Errorf("failed to load environment variables: %w", err)
 	}
-
-	// Validate and set defaults
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+	
+	// Unmarshal into config struct
+	if err := k.Unmarshal("", config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-
+	
+	// Validate configuration
+	if err := ValidateConfig(config); err != nil {
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+	
 	return config, nil
 }
 
-// Validate validates the configuration
-func (c *Config) Validate() error {
-	// API configuration
-	if c.APIURL == "" {
+// GenerateJSONSchema generates a JSON Schema for the agent configuration
+func GenerateJSONSchema() (*jsonschema.Schema, error) {
+	reflector := &jsonschema.Reflector{
+		AllowAdditionalProperties: false,
+		RequiredFromJSONSchemaTags: true,
+	}
+	
+	// Generate schema for Config struct
+	schema := reflector.Reflect(&Config{})
+	
+	// Add custom metadata
+	schema.Title = "Openlane Agent Configuration"
+	schema.Description = "Configuration schema for the Openlane compliance automation agent"
+	schema.Version = "https://json-schema.org/draft/2020-12/schema"
+	
+	return schema, nil
+}
+
+// ValidateConfig validates a configuration against the JSON Schema and business rules
+func ValidateConfig(config *Config) error {
+	// Generate schema
+	schema, err := GenerateJSONSchema()
+	if err != nil {
+		return fmt.Errorf("failed to generate schema: %w", err)
+	}
+	
+	// Marshal config to JSON for validation
+	configBytes, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	
+	// Convert schema to JSON for validation
+	schemaBytes, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("failed to marshal schema: %w", err)
+	}
+	
+	// Compile schema using jsonschema v5
+	compiler := jsonschemavalidator.NewCompiler()
+	if err := compiler.AddResource("agent-config.json", strings.NewReader(string(schemaBytes))); err != nil {
+		return fmt.Errorf("failed to add schema resource: %w", err)
+	}
+	
+	compiledSchema, err := compiler.Compile("agent-config.json")
+	if err != nil {
+		return fmt.Errorf("failed to compile schema: %w", err)
+	}
+	
+	// Validate against schema
+	var configData interface{}
+	if err := json.Unmarshal(configBytes, &configData); err != nil {
+		return fmt.Errorf("failed to unmarshal config for validation: %w", err)
+	}
+	
+	if err := compiledSchema.Validate(configData); err != nil {
+		return fmt.Errorf("schema validation failed: %w", err)
+	}
+	
+	// Additional business logic validation
+	if err := validateBusinessRules(config); err != nil {
+		return fmt.Errorf("business rule validation failed: %w", err)
+	}
+	
+	return nil
+}
+
+// validateBusinessRules performs additional validation beyond JSON Schema
+func validateBusinessRules(config *Config) error {
+	// Validate API URL
+	if config.APIURL == "" {
 		return fmt.Errorf("api_url is required")
 	}
-
-	if c.RegistrationToken == "" {
+	
+	// Validate registration token
+	if config.RegistrationToken == "" {
 		return fmt.Errorf("registration_token is required")
 	}
-
-	// Set defaults
-	if c.LogLevel == "" {
-		c.LogLevel = "info"
+	
+	// Validate data directory
+	if config.DataDir == "" {
+		return fmt.Errorf("data_dir is required")
 	}
-
-	if c.DataDir == "" {
-		c.DataDir = "./data"
+	
+	// Create data directory if it doesn't exist
+	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory %s: %w", config.DataDir, err)
 	}
-
-	if c.PollInterval == 0 {
-		c.PollInterval = 1 * time.Minute
-	}
-
-	if c.MaxConcurrency == 0 {
-		c.MaxConcurrency = 3
-	}
-
-	if c.DefaultTimeout == 0 {
-		c.DefaultTimeout = 5 * time.Minute
-	}
-
+	
 	// Validate checks
-	for i := range c.Checks {
-		if err := c.Checks[i].Validate(); err != nil {
-			return fmt.Errorf("check %d (%s): %w", i, c.Checks[i].Name, err)
+	checkNames := make(map[string]bool)
+	for i, check := range config.Checks {
+		if err := validateCheck(&check, i); err != nil {
+			return fmt.Errorf("check %d (%s): %w", i, check.Name, err)
 		}
-
-		// Set defaults for checks
-		c.Checks[i].SetDefaults(c.DefaultTimeout)
+		
+		// Check for duplicate names
+		if checkNames[check.Name] {
+			return fmt.Errorf("duplicate check name: %s", check.Name)
+		}
+		checkNames[check.Name] = true
 	}
-
+	
 	return nil
 }
 
-// Validate validates a check configuration
-func (ch *Check) Validate() error {
-	if ch.Name == "" {
+// validateCheck validates a single check configuration
+func validateCheck(check *Check, index int) error {
+	if check.Name == "" {
 		return fmt.Errorf("check name is required")
 	}
-
-	if ch.Command == "" {
+	
+	if check.Command == "" {
 		return fmt.Errorf("check command is required")
 	}
-
-	if ch.Schedule == "" {
+	
+	if check.Schedule == "" {
 		return fmt.Errorf("check schedule is required")
 	}
-
-	// Validate schedule format (basic validation)
-	if !isValidCronExpression(ch.Schedule) {
-		return fmt.Errorf("invalid cron schedule: %s", ch.Schedule)
+	
+	// Validate cron expression
+	if !isValidCronExpression(check.Schedule) {
+		return fmt.Errorf("invalid cron schedule: %s", check.Schedule)
 	}
-
+	
+	// Validate evidence paths
+	for _, path := range check.EvidencePaths {
+		if !filepath.IsAbs(path) && !filepath.IsLocal(path) {
+			return fmt.Errorf("invalid evidence path: %s", path)
+		}
+	}
+	
+	// Validate action commands
+	if check.OnPass != nil {
+		if err := validateActionConfig(check.OnPass, "onPass"); err != nil {
+			return err
+		}
+	}
+	
+	if check.OnFail != nil {
+		if err := validateActionConfig(check.OnFail, "onFail"); err != nil {
+			return err
+		}
+	}
+	
 	return nil
 }
 
-// SetDefaults sets default values for a check
-func (ch *Check) SetDefaults(defaultTimeout time.Duration) {
-	if ch.Timeout == 0 {
-		ch.Timeout = defaultTimeout
+// validateActionConfig validates an action configuration
+func validateActionConfig(action *ActionConfig, context string) error {
+	// Validate action commands
+	commandNames := make(map[string]bool)
+	for i, cmd := range action.Commands {
+		if cmd.Name == "" {
+			return fmt.Errorf("%s command %d: name is required", context, i)
+		}
+		
+		if cmd.Command == "" {
+			return fmt.Errorf("%s command %d (%s): command is required", context, i, cmd.Name)
+		}
+		
+		// Check for duplicate command names
+		if commandNames[cmd.Name] {
+			return fmt.Errorf("%s: duplicate command name: %s", context, cmd.Name)
+		}
+		commandNames[cmd.Name] = true
 	}
-
-	if ch.WorkDir == "" {
-		ch.WorkDir = "."
-	}
-
-	// Default to enabled if not explicitly set
-	if !ch.hasExplicitEnabledSetting() {
-		ch.Enabled = true
-	}
-}
-
-// hasExplicitEnabledSetting checks if enabled was explicitly set
-func (ch *Check) hasExplicitEnabledSetting() bool {
-	// This is a simplified approach - in a real implementation you might
-	// want to use a pointer or custom YAML unmarshaling
-	return !ch.Enabled
+	
+	return nil
 }
 
 // SaveConfig saves the configuration to a YAML file
@@ -288,18 +439,18 @@ func (c *Config) SaveConfig(path string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
-
-	// Marshal to YAML
-	data, err := yaml.Marshal(c)
+	
+	// Marshal to YAML using gopkg.in/yaml.v3
+	data, err := yamlv3.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-
+	
 	// Write file
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
-
+	
 	return nil
 }
 
@@ -326,12 +477,17 @@ func (c *Config) GetEnabledChecks() []Check {
 
 // isValidCronExpression performs basic validation of cron expressions
 func isValidCronExpression(expr string) bool {
-	// Basic validation - proper cron parsing would use a library like robfig/cron
+	// Use robfig/cron library for proper validation if needed
+	// For now, basic validation
 	parts := strings.Fields(expr)
-
 	// Standard cron: minute hour day month weekday (5 parts)
 	// Extended cron: second minute hour day month weekday (6 parts)
 	return len(parts) == 5 || len(parts) == 6
+}
+
+// Validate implements the Validator interface for the Config struct
+func (c *Config) Validate() error {
+	return ValidateConfig(c)
 }
 
 // ExampleConfig returns an example configuration for documentation
@@ -346,6 +502,12 @@ func ExampleConfig() *Config {
 		Spawn:             1,
 		MaxConcurrency:    3,
 		DefaultTimeout:    5 * time.Minute,
+		Evidence: EvidenceConfig{
+			Enabled:         true,
+			RetentionPeriod: 30 * 24 * time.Hour, // 30 days
+			MaxFileSize:     100 * 1024 * 1024,   // 100MB
+			CompressFiles:   false,
+		},
 		Checks: []Check{
 			{
 				Name:        "aws-iam-compliance",
@@ -362,34 +524,63 @@ func ExampleConfig() *Config {
 				},
 				Tags:    []string{"aws", "iam", "critical"},
 				Enabled: true,
+				EvidencePaths: []string{
+					"./evidence/aws-iam/",
+					"./logs/aws-audit.json",
+				},
+				OnPass: &ActionConfig{
+					UploadEvidence:      true,
+					UpdateControlStatus: true,
+				},
+				OnFail: &ActionConfig{
+					UploadEvidence:      true,
+					UpdateControlStatus: true,
+					Commands: []ActionCommand{
+						{
+							Name:    "create-remediation-ticket",
+							Command: "./scripts/create-ticket.sh",
+							Args:    []string{"--category", "iam", "--priority", "high"},
+							Timeout: 1 * time.Minute,
+						},
+					},
+				},
 			},
 			{
-				Name:        "github-audit",
-				Description: "Audit GitHub organization settings",
-				Command:     "python3",
-				Args:        []string{"./scripts/github-audit.py", "--org", "mycompany"},
-				Schedule:    "0 0 * * *", // Daily at midnight
+				Name:        "disk-encryption-check",
+				Description: "Verify that full disk encryption is enabled on the system",
+				Command:     "./scripts/check-disk-encryption.sh",
+				Schedule:    "0 6 * * *", // Daily at 6 AM
 				Timeout:     5 * time.Minute,
 				Env: []string{
-					"GITHUB_TOKEN=${GITHUB_TOKEN}",
+					"ENCRYPTION_POLICY=required",
 				},
 				Controls: []string{
-					"SOC2:CC6.3",
+					"SOC2:CC6.7",
+					"ISO27001:A.10.1.1",
+					"NIST:SC-28",
 				},
-				Tags:    []string{"github", "access-control"},
+				Tags: []string{"encryption", "storage", "host-security"},
 				Enabled: true,
-			},
-			{
-				Name:        "database-compliance",
-				Description: "Check database security settings",
-				Command:     "./scripts/check-database.rb",
-				Schedule:    "*/30 * * * *", // Every 30 minutes
-				Timeout:     2 * time.Minute,
-				Controls: []string{
-					"PCI-DSS:8.2",
+				EvidencePaths: []string{
+					"./evidence/disk-encryption-check/",
 				},
-				Tags:    []string{"database", "security"},
-				Enabled: false, // Disabled by default
+				OnPass: &ActionConfig{
+					UploadEvidence:      true,
+					UpdateControlStatus: true,
+				},
+				OnFail: &ActionConfig{
+					UploadEvidence:      true,
+					UpdateControlStatus: true,
+					Commands: []ActionCommand{
+						{
+							Name:            "create-security-incident",
+							Command:         "./scripts/create-incident.sh",
+							Args:            []string{"--type", "encryption", "--severity", "high"},
+							Timeout:         1 * time.Minute,
+							ContinueOnError: true,
+						},
+					},
+				},
 			},
 		},
 	}

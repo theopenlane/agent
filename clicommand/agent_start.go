@@ -416,7 +416,7 @@ func CheckAction(c *cli.Context) error {
 	fmt.Println("---")
 
 	// Execute the check directly using ComplianceCheckController
-	controller := core.NewComplianceCheckController(logger, nil, "cli-execution")
+	controller := core.NewComplianceCheckController(logger, nil, "cli-execution", nil)
 	
 	// Convert config.Check to api.RemoteCheck for execution
 	remoteCheck := &api.RemoteCheck{
