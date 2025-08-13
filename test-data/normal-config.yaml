@@ -1,0 +1,42 @@
+# Normal mode configuration - standard API operation
+registrationToken: "test-token"
+apiUrl: "https://api.theopenlane.io"
+agentName: "normal-test-agent"
+logLevel: "info"
+dataDir: "./test-data/data"
+pollInterval: "1m"
+spawn: 1
+maxConcurrency: 3
+defaultTimeout: "5m"
+
+# Normal mode - standard API operation (this is the default)
+offline:
+  mode: "normal"
+
+evidence:
+  enabled: true
+  retentionPeriod: "720h"  # 30 days
+  maxFileSize: 104857600  # 100MB
+  compressFiles: false
+
+checks:
+  - name: "security-baseline"
+    description: "Security baseline compliance check"
+    command: "echo"
+    args: ["Security baseline check passed"]
+    schedule: "0 8 * * *"  # Daily at 8 AM
+    timeout: "5m"
+    enabled: true
+    controls: ["SEC-001", "SEC-002"]
+    tags: ["security", "baseline"]
+    continueOnError: false
+    
+  - name: "system-health"
+    description: "System health monitoring"
+    command: "uptime"
+    schedule: "0 */4 * * *"  # Every 4 hours
+    timeout: "30s"
+    enabled: true
+    controls: ["MON-001"]
+    tags: ["monitoring", "health"]
+    continueOnError: true

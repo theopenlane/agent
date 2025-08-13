@@ -22,7 +22,7 @@ import (
 type Config struct {
 	// API connection settings
 	RegistrationToken string `json:"registrationToken" koanf:"registrationToken" jsonschema:"required" sensitive:"true" description:"Token used to register with the Openlane platform"`
-	APIURL            string `json:"apiUrl" koanf:"apiUrl" default:"https://api.openlane.io" description:"Base URL for the Openlane API"`
+	APIURL            string `json:"apiUrl" koanf:"apiUrl" default:"https://api.theopenlane.io" description:"Base URL for the Openlane API"`
 
 	// Agent identification
 	AgentID   string `json:"agentId,omitempty" koanf:"agentId" description:"Unique identifier for this agent instance"`
@@ -41,6 +41,9 @@ type Config struct {
 	// Evidence settings
 	Evidence EvidenceConfig `json:"evidence" koanf:"evidence" description:"Evidence collection and retention configuration"`
 
+	// Offline buffering settings
+	Offline OfflineConfig `json:"offline" koanf:"offline" description:"Offline buffering and standalone mode configuration"`
+
 	// Compliance checks to run locally
 	Checks []Check `json:"checks" koanf:"checks" description:"Local compliance checks to execute"`
 }
@@ -51,6 +54,35 @@ type EvidenceConfig struct {
 	RetentionPeriod time.Duration `json:"retentionPeriod" koanf:"retentionPeriod" default:"30d" description:"How long to retain evidence files"`
 	MaxFileSize     int64         `json:"maxFileSize" koanf:"maxFileSize" default:"104857600" description:"Maximum evidence file size in bytes (100MB default)"`
 	CompressFiles   bool          `json:"compressFiles" koanf:"compressFiles" default:"false" description:"Compress evidence files to save space"`
+}
+
+// OperationMode defines how the agent operates
+type OperationMode string
+
+const (
+	// ModeNormal - Standard operation with API connectivity
+	ModeNormal OperationMode = "normal"
+	// ModeStandalone - Completely independent operation, no API connectivity
+	ModeStandalone OperationMode = "standalone" 
+	// ModeBuffered - Normal operation with local buffering when API unavailable
+	ModeBuffered OperationMode = "buffered"
+)
+
+// OfflineConfig configures offline behavior and operation modes
+type OfflineConfig struct {
+	Mode                  OperationMode `json:"mode" koanf:"mode" default:"normal" description:"Operation mode: normal, standalone, or buffered"`
+	
+	// Standalone mode settings
+	OutputDir             string        `json:"outputDir" koanf:"outputDir" default:"./results" description:"Directory for storing results in standalone mode"`
+	OutputFormat          string        `json:"outputFormat" koanf:"outputFormat" default:"json" description:"Output format for standalone mode: json, yaml, csv"`
+	
+	// Buffered mode settings
+	BufferDir             string        `json:"bufferDir" koanf:"bufferDir" default:"./buffer" description:"Directory for storing buffered results when offline"`
+	ConnectivityCheckURL  string        `json:"connectivityCheckUrl" koanf:"connectivityCheckUrl" description:"URL endpoint for connectivity checks (defaults to API URL + /livez)"`
+	ConnectivityInterval  time.Duration `json:"connectivityInterval" koanf:"connectivityInterval" default:"30s" description:"Interval for connectivity checks"`
+	SyncInterval          time.Duration `json:"syncInterval" koanf:"syncInterval" default:"5m" description:"Interval for periodic sync attempts"`
+	MaxRetries            int           `json:"maxRetries" koanf:"maxRetries" default:"5" description:"Maximum retry attempts for buffered results before giving up"`
+	BufferRetentionPeriod time.Duration `json:"bufferRetentionPeriod" koanf:"bufferRetentionPeriod" default:"7d" description:"How long to retain buffered results before cleanup"`
 }
 
 // Check represents a single compliance check configuration
@@ -227,10 +259,10 @@ func DefaultConfig() *Config {
 func LoadConfig(configPath string) (*Config, error) {
 	// Create koanf instance
 	k := koanf.New(".")
-	
+
 	// Start with defaults
 	config := DefaultConfig()
-	
+
 	// Load from file if it exists
 	if configPath != "" {
 		if _, err := os.Stat(configPath); err == nil {
@@ -239,7 +271,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			}
 		}
 	}
-	
+
 	// Load environment variables with OPENLANE_AGENT_ prefix
 	if err := k.Load(env.Provider("OPENLANE_AGENT_", ".", func(s string) string {
 		// Convert OPENLANE_AGENT_API_URL to apiUrl (simple lowercase conversion)
@@ -247,35 +279,35 @@ func LoadConfig(configPath string) (*Config, error) {
 	}), nil); err != nil {
 		return nil, fmt.Errorf("failed to load environment variables: %w", err)
 	}
-	
+
 	// Unmarshal into config struct
 	if err := k.Unmarshal("", config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-	
+
 	// Validate configuration
 	if err := ValidateConfig(config); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
-	
+
 	return config, nil
 }
 
 // GenerateJSONSchema generates a JSON Schema for the agent configuration
 func GenerateJSONSchema() (*jsonschema.Schema, error) {
 	reflector := &jsonschema.Reflector{
-		AllowAdditionalProperties: false,
+		AllowAdditionalProperties:  false,
 		RequiredFromJSONSchemaTags: true,
 	}
-	
+
 	// Generate schema for Config struct
 	schema := reflector.Reflect(&Config{})
-	
+
 	// Add custom metadata
 	schema.Title = "Openlane Agent Configuration"
 	schema.Description = "Configuration schema for the Openlane compliance automation agent"
 	schema.Version = "https://json-schema.org/draft/2020-12/schema"
-	
+
 	return schema, nil
 }
 
@@ -286,84 +318,132 @@ func ValidateConfig(config *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to generate schema: %w", err)
 	}
-	
+
 	// Marshal config to JSON for validation
 	configBytes, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	
+
 	// Convert schema to JSON for validation
 	schemaBytes, err := json.Marshal(schema)
 	if err != nil {
 		return fmt.Errorf("failed to marshal schema: %w", err)
 	}
-	
+
 	// Compile schema using jsonschema v5
 	compiler := jsonschemavalidator.NewCompiler()
 	if err := compiler.AddResource("agent-config.json", strings.NewReader(string(schemaBytes))); err != nil {
 		return fmt.Errorf("failed to add schema resource: %w", err)
 	}
-	
+
 	compiledSchema, err := compiler.Compile("agent-config.json")
 	if err != nil {
 		return fmt.Errorf("failed to compile schema: %w", err)
 	}
-	
+
 	// Validate against schema
 	var configData interface{}
 	if err := json.Unmarshal(configBytes, &configData); err != nil {
 		return fmt.Errorf("failed to unmarshal config for validation: %w", err)
 	}
-	
+
 	if err := compiledSchema.Validate(configData); err != nil {
 		return fmt.Errorf("schema validation failed: %w", err)
 	}
-	
+
 	// Additional business logic validation
 	if err := validateBusinessRules(config); err != nil {
 		return fmt.Errorf("business rule validation failed: %w", err)
 	}
-	
+
 	return nil
+}
+
+// validateOperationMode validates the operation mode setting
+func validateOperationMode(config *Config) error {
+	switch config.Offline.Mode {
+	case ModeNormal, ModeStandalone, ModeBuffered:
+		return nil
+	case "":
+		// Default to normal mode if not specified
+		config.Offline.Mode = ModeNormal
+		return nil
+	default:
+		return fmt.Errorf("invalid operation mode: %s (must be 'normal', 'standalone', or 'buffered')", config.Offline.Mode)
+	}
 }
 
 // validateBusinessRules performs additional validation beyond JSON Schema
 func validateBusinessRules(config *Config) error {
-	// Validate API URL
-	if config.APIURL == "" {
-		return fmt.Errorf("api_url is required")
+	// Validate operation mode
+	if err := validateOperationMode(config); err != nil {
+		return err
 	}
-	
-	// Validate registration token
-	if config.RegistrationToken == "" {
-		return fmt.Errorf("registration_token is required")
+
+	// Mode-specific validation
+	switch config.Offline.Mode {
+	case ModeStandalone:
+		// Standalone mode doesn't require API URL or registration token
+		// Clear them if they're empty to avoid validation issues
+		if config.APIURL == "" {
+			config.APIURL = "http://localhost" // Placeholder - not used
+		}
+		if config.RegistrationToken == "" {
+			config.RegistrationToken = "standalone-mode" // Placeholder - not used
+		}
+		if config.Offline.OutputDir == "" {
+			return fmt.Errorf("output_dir is required for standalone mode")
+		}
+		// Create output directory if it doesn't exist
+		if err := os.MkdirAll(config.Offline.OutputDir, 0755); err != nil {
+			return fmt.Errorf("failed to create output directory %s: %w", config.Offline.OutputDir, err)
+		}
+	case ModeNormal, ModeBuffered:
+		// Normal and buffered modes require API connectivity settings
+		if config.APIURL == "" {
+			return fmt.Errorf("api_url is required for %s mode", config.Offline.Mode)
+		}
+		if config.RegistrationToken == "" {
+			return fmt.Errorf("registration_token is required for %s mode", config.Offline.Mode)
+		}
+		
+		// Buffered mode specific validation
+		if config.Offline.Mode == ModeBuffered {
+			if config.Offline.BufferDir == "" {
+				return fmt.Errorf("buffer_dir is required for buffered mode")
+			}
+			// Create buffer directory if it doesn't exist
+			if err := os.MkdirAll(config.Offline.BufferDir, 0755); err != nil {
+				return fmt.Errorf("failed to create buffer directory %s: %w", config.Offline.BufferDir, err)
+			}
+		}
 	}
-	
-	// Validate data directory
+
+	// Validate data directory (required for all modes)
 	if config.DataDir == "" {
 		return fmt.Errorf("data_dir is required")
 	}
-	
+
 	// Create data directory if it doesn't exist
 	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory %s: %w", config.DataDir, err)
 	}
-	
+
 	// Validate checks
 	checkNames := make(map[string]bool)
 	for i, check := range config.Checks {
 		if err := validateCheck(&check, i); err != nil {
 			return fmt.Errorf("check %d (%s): %w", i, check.Name, err)
 		}
-		
+
 		// Check for duplicate names
 		if checkNames[check.Name] {
 			return fmt.Errorf("duplicate check name: %s", check.Name)
 		}
 		checkNames[check.Name] = true
 	}
-	
+
 	return nil
 }
 
@@ -372,40 +452,40 @@ func validateCheck(check *Check, index int) error {
 	if check.Name == "" {
 		return fmt.Errorf("check name is required")
 	}
-	
+
 	if check.Command == "" {
 		return fmt.Errorf("check command is required")
 	}
-	
+
 	if check.Schedule == "" {
 		return fmt.Errorf("check schedule is required")
 	}
-	
+
 	// Validate cron expression
 	if !isValidCronExpression(check.Schedule) {
 		return fmt.Errorf("invalid cron schedule: %s", check.Schedule)
 	}
-	
+
 	// Validate evidence paths
 	for _, path := range check.EvidencePaths {
 		if !filepath.IsAbs(path) && !filepath.IsLocal(path) {
 			return fmt.Errorf("invalid evidence path: %s", path)
 		}
 	}
-	
+
 	// Validate action commands
 	if check.OnPass != nil {
 		if err := validateActionConfig(check.OnPass, "onPass"); err != nil {
 			return err
 		}
 	}
-	
+
 	if check.OnFail != nil {
 		if err := validateActionConfig(check.OnFail, "onFail"); err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -417,18 +497,18 @@ func validateActionConfig(action *ActionConfig, context string) error {
 		if cmd.Name == "" {
 			return fmt.Errorf("%s command %d: name is required", context, i)
 		}
-		
+
 		if cmd.Command == "" {
 			return fmt.Errorf("%s command %d (%s): command is required", context, i, cmd.Name)
 		}
-		
+
 		// Check for duplicate command names
 		if commandNames[cmd.Name] {
 			return fmt.Errorf("%s: duplicate command name: %s", context, cmd.Name)
 		}
 		commandNames[cmd.Name] = true
 	}
-	
+
 	return nil
 }
 
@@ -439,18 +519,18 @@ func (c *Config) SaveConfig(path string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
-	
+
 	// Marshal to YAML using gopkg.in/yaml.v3
 	data, err := yamlv3.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	
+
 	// Write file
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -494,7 +574,7 @@ func (c *Config) Validate() error {
 func ExampleConfig() *Config {
 	return &Config{
 		RegistrationToken: "${OPENLANE_REGISTRATION_TOKEN}",
-		APIURL:            "https://api.openlane.io",
+		APIURL:            "https://api.theopenlane.io",
 		AgentName:         "production-compliance-agent",
 		LogLevel:          "info",
 		DataDir:           "./data",
@@ -507,6 +587,16 @@ func ExampleConfig() *Config {
 			RetentionPeriod: 30 * 24 * time.Hour, // 30 days
 			MaxFileSize:     100 * 1024 * 1024,   // 100MB
 			CompressFiles:   false,
+		},
+		Offline: OfflineConfig{
+			Mode:                  ModeBuffered,
+			OutputDir:             "./results",
+			OutputFormat:          "json",
+			BufferDir:             "./buffer",
+			ConnectivityInterval:  30 * time.Second,
+			SyncInterval:          5 * time.Minute,
+			MaxRetries:            5,
+			BufferRetentionPeriod: 7 * 24 * time.Hour, // 7 days
 		},
 		Checks: []Check{
 			{
@@ -559,7 +649,7 @@ func ExampleConfig() *Config {
 					"ISO27001:A.10.1.1",
 					"NIST:SC-28",
 				},
-				Tags: []string{"encryption", "storage", "host-security"},
+				Tags:    []string{"encryption", "storage", "host-security"},
 				Enabled: true,
 				EvidencePaths: []string{
 					"./evidence/disk-encryption-check/",

@@ -99,7 +99,7 @@ var StartFlags = []cli.Flag{
 	},
 	cli.StringFlag{
 		Name:   "api-url",
-		Value:  "https://api.openlane.io",
+		Value:  "https://api.theopenlane.io",
 		Usage:  "Openlane API URL (overrides config file)",
 		EnvVar: "OPENLANE_API_URL",
 	},
@@ -177,7 +177,7 @@ func StartAction(c *cli.Context) error {
 		if pidFile == "" {
 			pidFile = "agent.pid"
 		}
-		
+
 		if err := daemonize(logger, pidFile); err != nil {
 			return fmt.Errorf("failed to daemonize: %w", err)
 		}
@@ -366,7 +366,7 @@ func StatusAction(c *cli.Context) error {
 			fmt.Printf("Poll interval: %s\n", cfg.PollInterval)
 			fmt.Printf("Max concurrency: %d\n", cfg.MaxConcurrency)
 			fmt.Printf("Number of checks: %d\n", len(cfg.Checks))
-			
+
 			// Show enabled checks
 			enabledChecks := 0
 			for _, check := range cfg.Checks {
@@ -417,25 +417,25 @@ func CheckAction(c *cli.Context) error {
 
 	// Execute the check directly using ComplianceCheckController
 	controller := core.NewComplianceCheckController(logger, nil, "cli-execution", nil)
-	
+
 	// Convert config.Check to api.RemoteCheck for execution
 	remoteCheck := &api.RemoteCheck{
-		Name:        check.Name,
-		Description: check.Description,
-		Command:     check.Command,
-		Args:        check.Args,
-		WorkDir:     check.WorkDir,
-		Env:         check.Env,
+		Name:            check.Name,
+		Description:     check.Description,
+		Command:         check.Command,
+		Args:            check.Args,
+		WorkDir:         check.WorkDir,
+		Env:             check.Env,
 		Timeout:         check.Timeout.String(),
 		Controls:        check.Controls,
 		Tags:            check.Tags,
 		Enabled:         true,
 		ContinueOnError: check.ContinueOnError,
 	}
-	
+
 	// Set the current execution context for logging
 	controller.SetCurrentCheck(remoteCheck, "")
-	
+
 	// Execute the check
 	ctx := context.Background()
 	result, err := controller.ExecuteCheck(ctx, remoteCheck)
@@ -443,18 +443,18 @@ func CheckAction(c *cli.Context) error {
 		fmt.Printf("Check execution failed: %v\n", err)
 		return err
 	}
-	
+
 	// Display results
 	fmt.Printf("\n=== Check Results ===\n")
 	fmt.Printf("Check: %s\n", result.CheckName)
 	fmt.Printf("Exit Code: %d\n", result.ExitCode)
 	fmt.Printf("Duration: %s\n", result.Duration)
 	fmt.Printf("Findings: %d\n", len(result.Findings))
-	
+
 	if result.Error != "" {
 		fmt.Printf("Error: %s\n", result.Error)
 	}
-	
+
 	// Display findings
 	if len(result.Findings) > 0 {
 		fmt.Printf("\n=== Findings ===\n")
@@ -469,7 +469,7 @@ func CheckAction(c *cli.Context) error {
 			fmt.Println()
 		}
 	}
-	
+
 	return nil
 }
 
@@ -508,32 +508,32 @@ func daemonize(logger zerolog.Logger, pidFile string) error {
 
 	// Fork process
 	logger.Info().Str("pid_file", pidFile).Msg("Starting in daemon mode")
-	
+
 	// Create new session and detach from terminal
 	// Note: In a full implementation, this would use proper Unix daemon techniques
 	// For now, we'll just write the PID and continue
-	
+
 	// Write PID file
 	pid := os.Getpid()
 	pidContent := fmt.Sprintf("%d\n", pid)
-	
+
 	if err := os.WriteFile(pidFile, []byte(pidContent), 0644); err != nil {
 		return fmt.Errorf("failed to write PID file %s: %w", pidFile, err)
 	}
-	
+
 	logger.Info().Int("pid", pid).Str("pid_file", pidFile).Msg("Daemon started")
-	
+
 	// Setup cleanup on exit
 	go func() {
 		defer os.Remove(pidFile)
-		
+
 		// Wait for program termination signals
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 		<-sigChan
-		
+
 		logger.Info().Str("pid_file", pidFile).Msg("Cleaning up PID file")
 	}()
-	
+
 	return nil
 }

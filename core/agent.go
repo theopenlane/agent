@@ -39,10 +39,17 @@ type Agent struct {
 
 // NewAgent creates a new compliance agent
 func NewAgent(logger zerolog.Logger, config config.Config) (*Agent, error) {
-	// Create GraphQL client
-	apiClient, err := api.NewGraphQLClient(config.APIURL, config.RegistrationToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create API client: %w", err)
+	var apiClient *api.GraphQLClient
+	
+	// Only create API client if not in standalone mode
+	if config.Offline.Mode != "standalone" {
+		client, err := api.NewGraphQLClient(config.APIURL, config.RegistrationToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create API client: %w", err)
+		}
+		apiClient = client
+	} else {
+		logger.Info().Msg("Running in standalone mode - API client disabled")
 	}
 
 	return &Agent{
@@ -55,6 +62,16 @@ func NewAgent(logger zerolog.Logger, config config.Config) (*Agent, error) {
 
 // Register registers the agent with the Openlane platform
 func (a *Agent) Register(ctx context.Context) error {
+	// Skip registration in standalone mode
+	if a.config.Offline.Mode == "standalone" {
+		a.logger.Info().Msg("Standalone mode - skipping agent registration")
+		return nil
+	}
+
+	if a.apiClient == nil {
+		return fmt.Errorf("API client not available for registration")
+	}
+
 	a.logger.Info().Str("name", a.config.AgentName).Msg("Registering agent")
 
 	// Get system information
@@ -109,7 +126,8 @@ func (a *Agent) Register(ctx context.Context) error {
 
 // Start starts the agent with the specified number of workers
 func (a *Agent) Start(ctx context.Context) error {
-	if a.agentInfo == nil {
+	// In standalone mode, we don't need agent registration
+	if a.config.Offline.Mode != "standalone" && a.agentInfo == nil {
 		return fmt.Errorf("agent not registered - call Register() first")
 	}
 

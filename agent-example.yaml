@@ -3,7 +3,7 @@
 
 # API connection settings
 registrationToken: "${OPENLANE_REGISTRATION_TOKEN}"  # Required: Token for platform registration
-apiUrl: "https://api.openlane.io"                    # Openlane platform API URL
+apiUrl: "https://api.theopenlane.io"                    # Openlane platform API URL
 
 # Agent identification
 agentName: "production-compliance-agent"             # Human-readable agent name

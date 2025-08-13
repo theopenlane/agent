@@ -17,7 +17,7 @@ func TestConfigValidation(t *testing.T) {
 			name: "valid config",
 			config: &Config{
 				RegistrationToken: "test-token",
-				APIURL:            "https://api.openlane.io",
+				APIURL:            "https://api.theopenlane.io",
 				AgentName:         "test-agent",
 				LogLevel:          "info",
 				DataDir:           "/tmp/test-data",
@@ -33,15 +33,15 @@ func TestConfigValidation(t *testing.T) {
 				},
 				Checks: []Check{
 					{
-						Name:        "test-check",
-						Description: "A test check",
-						Command:     "echo",
-						Args:        []string{"hello"},
-						Schedule:    "* * * * *",
-						Timeout:     1 * time.Minute,
-						Controls:    []string{"TEST:001"},
-						Tags:        []string{"test"},
-						Enabled:     true,
+						Name:          "test-check",
+						Description:   "A test check",
+						Command:       "echo",
+						Args:          []string{"hello"},
+						Schedule:      "* * * * *",
+						Timeout:       1 * time.Minute,
+						Controls:      []string{"TEST:001"},
+						Tags:          []string{"test"},
+						Enabled:       true,
 						EvidencePaths: []string{"/tmp/evidence"},
 						OnPass: &ActionConfig{
 							UploadEvidence:      true,
@@ -67,7 +67,7 @@ func TestConfigValidation(t *testing.T) {
 		{
 			name: "missing registration token",
 			config: &Config{
-				APIURL:   "https://api.openlane.io",
+				APIURL:   "https://api.theopenlane.io",
 				DataDir:  "/tmp/test-data",
 				LogLevel: "info",
 			},
@@ -86,7 +86,7 @@ func TestConfigValidation(t *testing.T) {
 			name: "invalid check - missing name",
 			config: &Config{
 				RegistrationToken: "test-token",
-				APIURL:            "https://api.openlane.io",
+				APIURL:            "https://api.theopenlane.io",
 				DataDir:           "/tmp/test-data",
 				LogLevel:          "info",
 				Checks: []Check{
@@ -102,7 +102,7 @@ func TestConfigValidation(t *testing.T) {
 			name: "invalid check - missing command",
 			config: &Config{
 				RegistrationToken: "test-token",
-				APIURL:            "https://api.openlane.io",
+				APIURL:            "https://api.theopenlane.io",
 				DataDir:           "/tmp/test-data",
 				LogLevel:          "info",
 				Checks: []Check{
@@ -118,7 +118,7 @@ func TestConfigValidation(t *testing.T) {
 			name: "invalid cron schedule",
 			config: &Config{
 				RegistrationToken: "test-token",
-				APIURL:            "https://api.openlane.io",
+				APIURL:            "https://api.theopenlane.io",
 				DataDir:           "/tmp/test-data",
 				LogLevel:          "info",
 				Checks: []Check{

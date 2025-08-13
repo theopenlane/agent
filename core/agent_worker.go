@@ -11,6 +11,7 @@ import (
 	"github.com/theopenlane/agent/api"
 	"github.com/theopenlane/agent/internal/config"
 	"github.com/theopenlane/agent/internal/scheduler"
+	"github.com/theopenlane/agent/internal/storage"
 	"github.com/theopenlane/core/pkg/models"
 	"github.com/theopenlane/core/pkg/openlaneclient"
 )
@@ -101,6 +102,9 @@ type AgentWorker struct {
 	// Local check scheduler
 	scheduler *scheduler.Scheduler
 
+	// Storage management
+	storageManager *storage.StorageManager
+
 	// The time when this agent worker started
 	startTime time.Time
 }
@@ -118,7 +122,15 @@ func NewAgentWorker(l zerolog.Logger, agentInfo *openlaneclient.JobRunner, apiCl
 		}
 	}
 
-	return &AgentWorker{
+	// Initialize storage manager based on operation mode
+	storageManager, err := storage.NewStorageManager(config.AgentConfiguration)
+	if err != nil {
+		l.Error().Err(err).Msg("Failed to create storage manager, agent will not function properly")
+		// We should still return the worker, but it won't be able to store results
+		storageManager = nil
+	}
+
+	worker := &AgentWorker{
 		logger:             l,
 		agentInfo:          agentInfo,
 		apiClient:          apiClient,
@@ -132,13 +144,26 @@ func NewAgentWorker(l zerolog.Logger, agentInfo *openlaneclient.JobRunner, apiCl
 		pollInterval:       config.PollInterval,
 		heartbeatInterval:  config.HeartbeatInterval,
 		scheduler:          sched,
+		storageManager:     storageManager,
 		startTime:          time.Now(),
 	}
+
+	l.Info().Str("mode", string(config.AgentConfiguration.Offline.Mode)).Msg("Storage manager initialized")
+
+	return worker
 }
 
 // Start begins the agent worker's main loop
 func (w *AgentWorker) Start(ctx context.Context) error {
 	w.logger.Info().Int("worker", w.spawnIndex).Msg("Starting worker")
+
+	// Initialize storage-specific components
+	if bufferedStorage, ok := w.storageManager.ResultStorage.(*storage.BufferedAPIStorage); ok {
+		w.logger.Info().Msg("Starting buffered API storage")
+		if err := bufferedStorage.Start(ctx); err != nil {
+			w.logger.Error().Err(err).Msg("Failed to start buffered storage")
+		}
+	}
 
 	// Start the heartbeat routine
 	go w.heartbeatRoutine(ctx)
@@ -154,6 +179,13 @@ func (w *AgentWorker) Start(ctx context.Context) error {
 func (w *AgentWorker) Stop() {
 	w.stopOnce.Do(func() {
 		w.logger.Info().Int("worker", w.spawnIndex).Msg("Stopping worker")
+		
+		// Stop storage manager components
+		if bufferedStorage, ok := w.storageManager.ResultStorage.(*storage.BufferedAPIStorage); ok {
+			bufferedStorage.Stop()
+		}
+		w.storageManager.Close()
+		
 		close(w.stop)
 	})
 }
@@ -425,10 +457,9 @@ func (w *AgentWorker) executeLocalCheck(ctx context.Context, check *config.Check
 	}
 }
 
-// reportResult reports the compliance check result back to Openlane
+// reportResult reports the compliance check result using the configured storage
 func (w *AgentWorker) reportResult(ctx context.Context, result *config.Result) error {
-	results := []*config.Result{result}
-	return w.apiClient.ReportResults(ctx, w.agentInfo.ID, results)
+	return w.storageManager.StoreResult(ctx, result)
 }
 
 // heartbeatRoutine sends periodic heartbeats to the platform
@@ -504,7 +535,7 @@ func (w *AgentWorker) GetStats() map[string]any {
 	w.stats.Lock()
 	defer w.stats.Unlock()
 
-	return map[string]any{
+	stats := map[string]any{
 		"state":                string(w.getState()),
 		"spawn_index":          w.spawnIndex,
 		"uptime":               time.Since(w.startTime).String(),
@@ -516,7 +547,15 @@ func (w *AgentWorker) GetStats() map[string]any {
 		"last_ping":            w.stats.lastPing,
 		"last_heartbeat":       w.stats.lastHeartbeat,
 		"last_heartbeat_error": w.stats.lastHeartbeatError,
+		"operation_mode":       string(w.agentConfiguration.Offline.Mode),
 	}
+
+	// Add storage information
+	if w.storageManager != nil {
+		stats["storage"] = w.storageManager.GetStorageStatus()
+	}
+
+	return stats
 }
 
 // Helper functions for data conversion

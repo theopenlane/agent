@@ -2,7 +2,7 @@
 
 # API connection settings
 api_key: "${OPENLANE_API_KEY}"
-api_url: "https://api.openlane.io"
+api_url: "https://api.theopenlane.io"
 
 # Agent identification
 agent_name: "production-compliance-agent"
@@ -36,7 +36,7 @@ checks:
       - "critical"
 
   # GitHub Organization Audit
-  - name: "github-org-audit" 
+  - name: "github-org-audit"
     description: "Audit GitHub organization security settings"
     command: "python3"
     args: ["./scripts/check-github-org.py"]
