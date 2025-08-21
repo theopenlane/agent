@@ -1,0 +1,258 @@
+# Example configuration showing platform-specific compliance checks
+# This demonstrates how to use the enhanced Check struct with platform variants
+
+# Global agent configuration
+logLevel: "info"
+dataDir: "./data"
+pollInterval: "5m"
+maxConcurrency: 3
+defaultTimeout: "10m"
+
+# Example compliance checks with platform-specific implementations
+checks:
+  # Disk encryption check - different approaches per platform
+  - name: "disk_encryption_enabled"
+    description: "Verify that full disk encryption is enabled"
+    schedule: "0 8 * * *"  # Daily at 8 AM
+    enabled: true
+    controls:
+      - "NIST-800-53-SC-28"  # Protection of Information at Rest
+      - "CIS-3.7"           # Ensure drive encryption
+    tags:
+      - "encryption"
+      - "data_protection"
+      - "security"
+    
+    # Platform-specific implementations
+    platformVariants:
+      # macOS - Check FileVault status
+      - platforms: ["darwin"]
+        command: "fdesetup"
+        args: ["status"]
+        includes: "FileVault is On"
+        remediation:
+          - "Enable FileVault: sudo fdesetup enable"
+          - "Follow the prompts to create a recovery key"
+          - "Store recovery key securely"
+      
+      # Linux - Check for LUKS encryption
+      - platforms: ["linux"]
+        file: "/proc/mounts"
+        includes: "luks"
+        remediation:
+          - "Configure LUKS encryption during installation"
+          - "Or encrypt existing partition: cryptsetup luksFormat /dev/sdX"
+          - "Update /etc/fstab and /etc/crypttab"
+      
+      # Windows - Check BitLocker status
+      - platforms: ["windows"]
+        command: "manage-bde"
+        args: ["-status", "C:"]
+        excludes: "Protection Off|Encryption Percentage.*0%"
+        remediation:
+          - "Enable BitLocker: manage-bde -on C: -RecoveryPassword"
+          - "Save recovery key: manage-bde -protectors -get C:"
+          - "Verify encryption: manage-bde -status C:"
+    
+    evidencePaths:
+      - "/var/log/messages"
+      - "/var/log/auth.log"
+    
+    onPass:
+      uploadEvidence: true
+      updateControlStatus: true
+    
+    onFail:
+      uploadEvidence: true
+      updateControlStatus: true
+      commands:
+        - name: "log_encryption_failure"
+          command: "logger"
+          args: ["SECURITY: Disk encryption check failed on $(hostname)"]
+
+  # Automatic login disabled check
+  - name: "auto_login_disabled"
+    description: "Verify automatic login is disabled for security"
+    schedule: "0 */6 * * *"  # Every 6 hours
+    enabled: true
+    controls:
+      - "NIST-800-53-AC-2"   # Account Management
+      - "CIS-5.3"            # Disable Automatic Login
+    tags:
+      - "authentication"
+      - "access_control"
+    
+    platformVariants:
+      # macOS - Check login window settings
+      - platforms: ["darwin"]
+        command: "defaults"
+        args: ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"]
+        exitCode: 1  # Should fail when auto-login is disabled
+        remediation:
+          - "Disable auto-login: sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser"
+          - "Restart system to apply changes"
+      
+      # Linux (Ubuntu/Debian) - Check GDM settings  
+      - platforms: ["ubuntu", "debian"]
+        file: "/etc/gdm3/daemon.conf"
+        excludes: "AutomaticLoginEnable\\s*=\\s*true"
+        remediation:
+          - "Edit /etc/gdm3/daemon.conf"
+          - "Set AutomaticLoginEnable=false"
+          - "Restart gdm3: sudo systemctl restart gdm3"
+      
+      # Linux (RHEL/CentOS) - Check GDM settings
+      - platforms: ["rhel", "centos", "fedora"]
+        file: "/etc/gdm/daemon.conf"
+        excludes: "AutomaticLoginEnable\\s*=\\s*true"
+        remediation:
+          - "Edit /etc/gdm/daemon.conf"
+          - "Set AutomaticLoginEnable=false"
+          - "Restart gdm: sudo systemctl restart gdm"
+      
+      # Windows - Check registry for auto-login
+      - platforms: ["windows"]
+        command: "reg"
+        args: ["query", "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", "/v", "AutoAdminLogon"]
+        includes: "AutoAdminLogon\\s+REG_SZ\\s+0"
+        remediation:
+          - "Disable auto-login: reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v AutoAdminLogon /t REG_SZ /d 0 /f"
+    
+    evidencePaths:
+      - "/var/log/auth.log"
+      - "/var/log/secure"
+
+  # System updates current check
+  - name: "system_updates_current"
+    description: "Verify system security updates are installed"
+    schedule: "0 6 * * *"  # Daily at 6 AM
+    enabled: true
+    controls:
+      - "NIST-800-53-SI-2"   # Flaw Remediation
+      - "CIS-1.9"            # Ensure updates are installed
+    tags:
+      - "patches"
+      - "vulnerability_management"
+    
+    platformVariants:
+      # macOS - Check for available updates
+      - platforms: ["darwin"]
+        command: "softwareupdate"
+        args: ["-l"]
+        excludes: "Software Update found the following new or updated software"
+        timeout: "2m"
+        remediation:
+          - "Install updates: sudo softwareupdate -ia"
+          - "Enable automatic updates in System Preferences"
+      
+      # Ubuntu/Debian - Check apt updates
+      - platforms: ["ubuntu", "debian"]
+        command: "apt"
+        args: ["list", "--upgradable"]
+        excludes: "\\d+\\s+upgradable"
+        remediation:
+          - "Update package list: sudo apt update"
+          - "Install security updates: sudo apt upgrade"
+          - "Enable unattended upgrades: sudo dpkg-reconfigure unattended-upgrades"
+      
+      # RHEL/CentOS - Check dnf/yum updates
+      - platforms: ["rhel", "centos", "fedora"]
+        command: "dnf"
+        args: ["check-update", "--security"]
+        exitCode: 0  # No updates available
+        remediation:
+          - "Install security updates: sudo dnf update --security"
+          - "Enable automatic updates: sudo dnf install dnf-automatic"
+      
+      # Windows - Check for pending updates
+      - platforms: ["windows"]
+        command: "powershell"
+        args: ["-Command", "Get-WUList | Where-Object {$_.IsDownloaded -eq $false} | Measure-Object | Select-Object -ExpandProperty Count"]
+        includes: "^0$"  # Zero pending updates
+        timeout: "3m"
+        remediation:
+          - "Install updates through Windows Update"
+          - "Enable automatic updates in Settings"
+    
+    evidencePaths:
+      - "/var/log/apt/history.log"
+      - "/var/log/dnf.log"
+      - "/var/log/yum.log"
+
+  # Firewall enabled check
+  - name: "host_firewall_enabled"
+    description: "Verify host-based firewall is active"
+    schedule: "0 */12 * * *"  # Twice daily
+    enabled: true
+    controls:
+      - "NIST-800-53-SC-7"   # Boundary Protection
+      - "CIS-3.5"            # Configure firewall
+    tags:
+      - "firewall"
+      - "network_security"
+    
+    platformVariants:
+      # macOS - Check Application Firewall
+      - platforms: ["darwin"]
+        command: "sudo"
+        args: ["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"]
+        includes: "Firewall is enabled"
+        remediation:
+          - "Enable firewall: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on"
+          - "Configure firewall rules in System Preferences"
+      
+      # Linux - Check UFW status (Ubuntu/Debian)
+      - platforms: ["ubuntu", "debian"]
+        command: "systemctl"
+        args: ["is-active", "ufw"]
+        includes: "active"
+        remediation:
+          - "Install UFW: sudo apt install ufw"
+          - "Enable UFW: sudo ufw enable"
+          - "Configure rules: sudo ufw default deny incoming && sudo ufw default allow outgoing"
+      
+      # Linux - Check iptables/firewalld (RHEL/CentOS)
+      - platforms: ["rhel", "centos", "fedora"]
+        command: "systemctl"
+        args: ["is-active", "firewalld"]
+        includes: "active"
+        remediation:
+          - "Start firewalld: sudo systemctl start firewalld"
+          - "Enable firewalld: sudo systemctl enable firewalld"
+          - "Configure zones: sudo firewall-cmd --set-default-zone=public"
+      
+      # Windows - Check Windows Firewall
+      - platforms: ["windows"]
+        command: "netsh"
+        args: ["advfirewall", "show", "allprofiles", "state"]
+        includes: "State\\s+ON"
+        remediation:
+          - "Enable Windows Firewall for all profiles"
+          - "Configure through Windows Security settings"
+    
+    evidencePaths:
+      - "/var/log/ufw.log"
+      - "/var/log/firewalld"
+    
+    onFail:
+      uploadEvidence: false  # Don't upload firewall logs for security
+      updateControlStatus: true
+
+  # Cross-platform check example (works on all platforms)
+  - name: "hostname_configured"
+    description: "Verify system hostname is properly configured"
+    command: "hostname"
+    args: ["-f"]
+    schedule: "0 12 * * *"  # Daily at noon
+    enabled: true
+    controls:
+      - "NIST-800-53-CM-6"   # Configuration Settings
+    tags:
+      - "configuration"
+      - "identity"
+    
+    # No platform variants - this check works the same on all platforms
+    
+    evidencePaths:
+      - "/etc/hostname"
+      - "/etc/hosts"

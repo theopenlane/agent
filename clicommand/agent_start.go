@@ -10,12 +10,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/theopenlane/agent/api"
+	"github.com/theopenlane/agent/config"
 	"github.com/theopenlane/agent/core"
-	"github.com/theopenlane/agent/internal/config"
-	"github.com/theopenlane/agent/version"
-	"github.com/urfave/cli"
+	"github.com/theopenlane/agent/internal/constants"
+	agentlogger "github.com/theopenlane/agent/internal/logger"
+	"github.com/theopenlane/agent/internal/storage"
+	cli "github.com/urfave/cli/v3"
 )
 
 const startDescription = `Usage:
@@ -51,7 +53,7 @@ Example:
 
 // StopFlags are the flags for the stop command
 var StopFlags = []cli.Flag{
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "pid-file",
 		Value: "agent.pid",
 		Usage: "Path to the PID file",
@@ -60,12 +62,12 @@ var StopFlags = []cli.Flag{
 
 // StatusFlags are the flags for the status command
 var StatusFlags = []cli.Flag{
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "pid-file",
 		Value: "agent.pid",
 		Usage: "Path to the PID file",
 	},
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "config",
 		Value: "agent.yaml",
 		Usage: "Path to the agent configuration file",
@@ -74,290 +76,220 @@ var StatusFlags = []cli.Flag{
 
 // StartFlags are the flags for the start command
 var StartFlags = []cli.Flag{
-	cli.StringFlag{
-		Name:   "config",
-		Value:  "agent.yaml",
-		Usage:  "Path to the agent configuration file",
-		EnvVar: "OPENLANE_AGENT_CONFIG",
+	&cli.StringFlag{
+		Name:  "config",
+		Value: "agent.yaml",
+		Usage: "Path to the agent configuration file",
+		// No EnvVars field in urfave/cli/v3
 	},
-	cli.StringFlag{
-		Name:   "log-level",
-		Value:  "info",
-		Usage:  "Set the log level (debug, info, warn, error)",
-		EnvVar: "OPENLANE_AGENT_LOG_LEVEL",
+	&cli.StringFlag{
+		Name:  "log-level",
+		Value: "info",
+		Usage: "Set the log level (debug, info, warn, error)",
+		// No EnvVars field in urfave/cli/v3
 	},
-	cli.StringFlag{
-		Name:   "data-dir",
-		Value:  "./data",
-		Usage:  "Directory for agent data and state",
-		EnvVar: "OPENLANE_AGENT_DATA_DIR",
+	&cli.StringFlag{
+		Name:  "data-dir",
+		Value: "./data",
+		Usage: "Directory for agent data and state",
+		// No EnvVars field in urfave/cli/v3
 	},
-	cli.StringFlag{
-		Name:   "api-key",
-		Usage:  "Openlane API key (overrides config file)",
-		EnvVar: "OPENLANE_API_KEY",
+	&cli.StringFlag{
+		Name:  "api-key",
+		Usage: "Openlane API key (overrides config file)",
+		// No EnvVars field in urfave/cli/v3
 	},
-	cli.StringFlag{
-		Name:   "api-url",
-		Value:  "https://api.theopenlane.io",
-		Usage:  "Openlane API URL (overrides config file)",
-		EnvVar: "OPENLANE_API_URL",
+	&cli.StringFlag{
+		Name:  "api-url",
+		Value: "https://api.theopenlane.io",
+		Usage: "Openlane API URL (overrides config file)",
+		// No EnvVars field in urfave/cli/v3
 	},
-	cli.BoolFlag{
+	&cli.BoolFlag{
 		Name:  "no-daemon",
 		Usage: "Run in foreground instead of daemonizing",
 	},
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "pid-file",
 		Value: "agent.pid",
 		Usage: "Path to the PID file (daemon mode only)",
 	},
-	cli.IntFlag{
+	&cli.IntFlag{
 		Name:  "max-concurrency",
 		Value: 3,
 		Usage: "Maximum number of concurrent checks",
 	},
-	cli.BoolFlag{
+	&cli.BoolFlag{
 		Name:  "dry-run",
 		Usage: "Validate configuration and exit without starting",
 	},
 }
 
 // StartAction starts the agent
-func StartAction(c *cli.Context) error {
-	// Load configuration
-	configPath := c.String("config")
-	cfg, err := loadAndValidateConfig(configPath, c)
-	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
-	}
-
-	// Setup logger
-	logLevel, err := zerolog.ParseLevel(cfg.LogLevel)
-	if err != nil {
-		return fmt.Errorf("invalid log level: %w", err)
-	}
-
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).Level(logLevel).With().Timestamp().Logger()
-
-	// Override config with CLI flags if provided
-	if apiKey := c.String("api-key"); apiKey != "" {
-		cfg.RegistrationToken = apiKey
-	}
-	if apiURL := c.String("api-url"); apiURL != "" {
-		cfg.APIURL = apiURL
-	}
-	if dataDir := c.String("data-dir"); dataDir != "" {
-		cfg.DataDir = dataDir
-	}
-	if maxConcurrency := c.Int("max-concurrency"); maxConcurrency > 0 {
-		cfg.MaxConcurrency = maxConcurrency
-	}
-
-	// Ensure data directory exists
-	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-		return fmt.Errorf("failed to create data directory: %w", err)
-	}
-
-	logger.Info().Str("version", version.FullVersion()).Msg("Starting Openlane Agent")
-	logger.Info().Str("config_path", configPath).Msg("Configuration loaded")
-	logger.Info().Str("data_dir", cfg.DataDir).Msg("Data directory set")
-	logger.Info().Str("api_url", cfg.APIURL).Msg("API endpoint configured")
-	logger.Info().Int("count", len(cfg.GetEnabledChecks())).Msg("Enabled checks loaded")
-
-	// Dry run mode
-	if c.Bool("dry-run") {
-		logger.Info().Msg("Dry run mode - configuration is valid, exiting")
-		return nil
-	}
-
-	// Handle daemon mode
-	if !c.Bool("no-daemon") {
-		pidFile := c.String("pid-file")
-		if pidFile == "" {
-			pidFile = "agent.pid"
-		}
-
-		if err := daemonize(logger, pidFile); err != nil {
-			return fmt.Errorf("failed to daemonize: %w", err)
-		}
-	}
-
-	// Create the agent (following Buildkite's pattern)
-	agent, err := core.NewAgent(logger, *cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create agent: %w", err)
-	}
-
-	// Setup graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		sig := <-sigChan
-		logger.Info().Str("signal", sig.String()).Msg("Received signal, shutting down gracefully")
-		agent.Stop()
-		cancel()
-	}()
-
-	// Register the agent
-	logger.Info().Msg("Registering Openlane compliance agent")
-	if err := agent.Register(ctx); err != nil {
-		return fmt.Errorf("agent registration failed: %w", err)
-	}
-
-	// Start the agent
-	logger.Info().Int("workers", cfg.Spawn).Msg("Agent starting with workers")
-	if err := agent.Start(ctx); err != nil {
-		return fmt.Errorf("agent failed to start: %w", err)
-	}
-
-	logger.Info().Msg("Agent stopped")
-	return nil
-}
-
-// loadAndValidateConfig loads and validates the configuration
-func loadAndValidateConfig(configPath string, c *cli.Context) (*config.Config, error) {
-	// Check if config file exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("configuration file not found: %s\nRun 'openlane-agent config init' to create one", configPath)
-	}
+func StartAction(ctx context.Context, cmd *cli.Command) error {
+	configPath := cmd.String("config")
+	logLevel := cmd.String("log-level")
+	dataDir := cmd.String("data-dir")
+	apiKey := cmd.String("api-key")
+	apiURL := cmd.String("api-url")
+	noDaemon := cmd.Bool("no-daemon")
+	pidFile := cmd.String("pid-file")
+	maxConcurrency := cmd.Int("max-concurrency")
+	dryRun := cmd.Bool("dry-run")
 
 	// Load configuration
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("%w: %w", ErrFailedToLoadConfig, err)
 	}
-
-	// Override log level from CLI if provided
-	if logLevel := c.String("log-level"); logLevel != "" {
+	if logLevel != "" {
 		cfg.LogLevel = logLevel
 	}
-
-	// Final validation
-	if err := cfg.Validate(); err != nil {
-		return nil, err
+	if apiKey != "" {
+		cfg.RegistrationToken = apiKey
 	}
-
-	return cfg, nil
+	if apiURL != "" {
+		cfg.APIURL = apiURL
+	}
+	if dataDir != "" {
+		cfg.DataDir = dataDir
+	}
+	if maxConcurrency > 0 {
+		cfg.MaxConcurrency = maxConcurrency
+	}
+	agentlogger.Initialize(cfg.LogLevel)
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return fmt.Errorf("%w: %w", ErrFailedToCreateDataDir, err)
+	}
+	log.Info().Str("version", constants.FullVersion()).Msg("Starting Openlane Agent")
+	log.Info().Str("config_path", configPath).Msg("Configuration loaded")
+	log.Info().Str("data_dir", cfg.DataDir).Msg("Data directory set")
+	log.Info().Str("api_url", cfg.APIURL).Msg("API endpoint configured")
+	log.Info().Int("count", len(cfg.GetEnabledChecks())).Msg("Enabled checks loaded")
+	if dryRun {
+		log.Info().Msg("Dry run mode - configuration is valid, exiting")
+		return nil
+	}
+	if !noDaemon {
+		if pidFile == "" {
+			pidFile = "agent.pid"
+		}
+		if err := daemonize(pidFile); err != nil {
+			return fmt.Errorf("failed to daemonize: %w", err)
+		}
+	}
+	agent, err := core.NewAgent(core.WithConfig(cfg))
+	if err != nil {
+		return fmt.Errorf("failed to create agent: %w", err)
+	}
+	ctxCancel, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		log.Info().Str("signal", sig.String()).Msg("Received signal, shutting down gracefully")
+		agent.Stop()
+		cancel()
+	}()
+	log.Info().Msg("Registering Openlane compliance agent")
+	if err := agent.Register(ctxCancel); err != nil {
+		return fmt.Errorf("agent registration failed: %w", err)
+	}
+	log.Info().Int("workers", cfg.Spawn).Msg("Agent starting with workers")
+	if err := agent.Start(ctxCancel); err != nil {
+		return fmt.Errorf("agent failed to start: %w", err)
+	}
+	log.Info().Msg("Agent stopped")
+	return nil
 }
 
-// StopAction stops a running agent
-func StopAction(c *cli.Context) error {
-	pidFile := c.String("pid-file")
+// loadAndValidateConfig loads and validates the configuration
+// Remove this function or refactor to not use cli.Context
+
+// StopAction stops a running agent (urfave/cli v3 signature)
+func StopAction(ctx context.Context, cmd *cli.Command) error {
+	pidFile := cmd.String("pid-file")
 	if pidFile == "" {
 		pidFile = "agent.pid"
 	}
-
 	fmt.Println("Stopping agent...")
-
-	// Try to read the PID file
 	if _, err := os.Stat(pidFile); os.IsNotExist(err) {
 		fmt.Printf("PID file %s not found. Agent may not be running or was started in foreground mode.\n", pidFile)
 		fmt.Println("Note: Use Ctrl+C to stop a foreground agent")
 		return nil
 	}
-
 	pidBytes, err := os.ReadFile(pidFile)
 	if err != nil {
-		return fmt.Errorf("failed to read PID file %s: %w", pidFile, err)
+		return fmt.Errorf("%w %s: %w", ErrFailedToReadPIDFile, pidFile, err)
 	}
-
 	pidStr := strings.TrimSpace(string(pidBytes))
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
-		return fmt.Errorf("invalid PID in file %s: %s", pidFile, pidStr)
+		return fmt.Errorf("%w: %s in file %s", ErrInvalidPID, pidStr, pidFile)
 	}
-
-	// Find the process
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		return fmt.Errorf("failed to find process with PID %d: %w", pid, err)
+		return fmt.Errorf("%w with PID %d: %w", ErrFailedToFindProcess, pid, err)
 	}
-
-	// Send SIGTERM for graceful shutdown
 	fmt.Printf("Sending SIGTERM to process %d...\n", pid)
 	if err := process.Signal(syscall.SIGTERM); err != nil {
-		return fmt.Errorf("failed to send SIGTERM to process %d: %w", pid, err)
+		return fmt.Errorf("%w to process %d: %w", ErrFailedToSendSIGTERM, pid, err)
 	}
-
-	// Wait a bit and check if process is still running
 	time.Sleep(2 * time.Second)
 	if err := process.Signal(syscall.Signal(0)); err != nil {
-		// Process is not running anymore
 		fmt.Println("Agent stopped successfully")
 		os.Remove(pidFile)
 		return nil
 	}
-
-	// Process is still running, try SIGKILL
 	fmt.Printf("Process still running, sending SIGKILL to process %d...\n", pid)
 	if err := process.Kill(); err != nil {
-		return fmt.Errorf("failed to kill process %d: %w", pid, err)
+		return fmt.Errorf("%w %d: %w", ErrFailedToKillProcess, pid, err)
 	}
-
 	fmt.Println("Agent forcefully stopped")
 	os.Remove(pidFile)
 	return nil
 }
 
-// StatusAction shows agent status
-func StatusAction(c *cli.Context) error {
-	pidFile := c.String("pid-file")
+// StatusAction shows agent status (urfave/cli v3 signature)
+func StatusAction(ctx context.Context, cmd *cli.Command) error {
+	pidFile := cmd.String("pid-file")
 	if pidFile == "" {
 		pidFile = "agent.pid"
 	}
-
 	fmt.Println("Agent Status:")
-
-	// Check if PID file exists
 	if _, err := os.Stat(pidFile); os.IsNotExist(err) {
 		fmt.Printf("Status: Not running (no PID file at %s)\n", pidFile)
 		return nil
 	}
-
-	// Read PID file
 	pidBytes, err := os.ReadFile(pidFile)
 	if err != nil {
 		fmt.Printf("Status: Unknown (failed to read PID file: %v)\n", err)
 		return nil
 	}
-
 	pidStr := strings.TrimSpace(string(pidBytes))
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		fmt.Printf("Status: Unknown (invalid PID in file: %s)\n", pidStr)
 		return nil
 	}
-
-	// Check if process is running
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		fmt.Printf("Status: Not running (failed to find process %d)\n", pid)
-		os.Remove(pidFile) // Clean up stale PID file
+		os.Remove(pidFile)
 		return nil
 	}
-
-	// Send signal 0 to check if process exists and is accessible
 	if err := process.Signal(syscall.Signal(0)); err != nil {
 		fmt.Printf("Status: Not running (process %d not accessible: %v)\n", pid, err)
-		os.Remove(pidFile) // Clean up stale PID file
+		os.Remove(pidFile)
 		return nil
 	}
-
 	fmt.Printf("Status: Running (PID: %d)\n", pid)
 	fmt.Printf("PID file: %s\n", pidFile)
-
-	// Try to load configuration and show basic info
-	configPath := c.String("config")
+	configPath := cmd.String("config")
 	if configPath == "" {
 		configPath = "agent.yaml"
 	}
-
 	if _, err := os.Stat(configPath); err == nil {
 		cfg, err := config.LoadConfig(configPath)
 		if err == nil {
@@ -366,8 +298,6 @@ func StatusAction(c *cli.Context) error {
 			fmt.Printf("Poll interval: %s\n", cfg.PollInterval)
 			fmt.Printf("Max concurrency: %d\n", cfg.MaxConcurrency)
 			fmt.Printf("Number of checks: %d\n", len(cfg.Checks))
-
-			// Show enabled checks
 			enabledChecks := 0
 			for _, check := range cfg.Checks {
 				if check.Enabled {
@@ -377,48 +307,43 @@ func StatusAction(c *cli.Context) error {
 			fmt.Printf("Enabled checks: %d\n", enabledChecks)
 		}
 	}
-
 	return nil
 }
 
-// CheckAction runs a single check
-func CheckAction(c *cli.Context) error {
-	configPath := c.String("config")
+// CheckAction runs a single check (urfave/cli v3 signature)
+func CheckAction(ctx context.Context, cmd *cli.Command) error {
+	configPath := cmd.String("config")
 	if configPath == "" {
 		configPath = "agent.yaml"
 	}
-
-	checkName := c.Args().First()
-	if checkName == "" {
-		return fmt.Errorf("check name is required")
+	args := cmd.Args().Slice()
+	if len(args) == 0 {
+		return ErrCheckNotFound
 	}
-
-	// Load configuration
+	checkName := args[0]
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
+		return fmt.Errorf("%w: %w", ErrFailedToLoadConfig, err)
 	}
-
-	// Find the check
 	check, err := cfg.GetCheck(checkName)
 	if err != nil {
-		return fmt.Errorf("check not found: %w", err)
+		return fmt.Errorf("%w: %w", ErrCheckNotFound, err)
 	}
-
-	// Setup logger
-	logLevel, _ := zerolog.ParseLevel(cfg.LogLevel)
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).Level(logLevel).With().Timestamp().Logger()
-
-	// Create executor and run the check
 	fmt.Printf("Running check: %s\n", check.Name)
 	fmt.Printf("Command: %s %v\n", check.Command, check.Args)
 	fmt.Printf("Schedule: %s\n", check.Schedule)
 	fmt.Println("---")
-
-	// Execute the check directly using ComplianceCheckController
-	controller := core.NewComplianceCheckController(logger, nil, "cli-execution", nil)
-
-	// Convert config.Check to api.RemoteCheck for execution
+	storageSystem, err := storage.NewStorageFromConfig(cfg)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to create storage, results may not be saved")
+		storageSystem = nil
+	}
+	var evidenceService *storage.EvidenceService
+	if storageSystem != nil {
+		storageConfig := storage.ConfigFromAgentConfig(cfg)
+		evidenceService = storage.NewEvidenceService(storageConfig)
+	}
+	controller := core.NewComplianceCheckController(nil, "cli-execution", storageSystem, evidenceService)
 	remoteCheck := &api.RemoteCheck{
 		Name:            check.Name,
 		Description:     check.Description,
@@ -432,30 +357,21 @@ func CheckAction(c *cli.Context) error {
 		Enabled:         true,
 		ContinueOnError: check.ContinueOnError,
 	}
-
-	// Set the current execution context for logging
 	controller.SetCurrentCheck(remoteCheck, "")
-
-	// Execute the check
-	ctx := context.Background()
-	result, err := controller.ExecuteCheck(ctx, remoteCheck)
+	ctxExec := context.Background()
+	result, err := controller.ExecuteCheck(ctxExec, remoteCheck)
 	if err != nil {
 		fmt.Printf("Check execution failed: %v\n", err)
 		return err
 	}
-
-	// Display results
 	fmt.Printf("\n=== Check Results ===\n")
 	fmt.Printf("Check: %s\n", result.CheckName)
 	fmt.Printf("Exit Code: %d\n", result.ExitCode)
 	fmt.Printf("Duration: %s\n", result.Duration)
 	fmt.Printf("Findings: %d\n", len(result.Findings))
-
 	if result.Error != "" {
 		fmt.Printf("Error: %s\n", result.Error)
 	}
-
-	// Display findings
 	if len(result.Findings) > 0 {
 		fmt.Printf("\n=== Findings ===\n")
 		for i, finding := range result.Findings {
@@ -469,25 +385,24 @@ func CheckAction(c *cli.Context) error {
 			fmt.Println()
 		}
 	}
-
 	return nil
 }
 
 // CheckFlags are the flags for the check command
 var CheckFlags = []cli.Flag{
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "config",
 		Value: "agent.yaml",
 		Usage: "Path to the agent configuration file",
 	},
-	cli.BoolFlag{
+	&cli.BoolFlag{
 		Name:  "verbose",
 		Usage: "Show verbose output",
 	},
 }
 
 // daemonize forks the process and writes PID file for background operation
-func daemonize(logger zerolog.Logger, pidFile string) error {
+func daemonize(pidFile string) error {
 	// Check if PID file already exists
 	if _, err := os.Stat(pidFile); err == nil {
 		// Read existing PID and check if process is running
@@ -497,7 +412,7 @@ func daemonize(logger zerolog.Logger, pidFile string) error {
 			if pid, parseErr := strconv.Atoi(pidStr); parseErr == nil {
 				if process, findErr := os.FindProcess(pid); findErr == nil {
 					if process.Signal(syscall.Signal(0)) == nil {
-						return fmt.Errorf("agent already running with PID %d (PID file: %s)", pid, pidFile)
+						return fmt.Errorf("%w with PID %d (PID file: %s)", ErrAgentAlreadyRunning, pid, pidFile)
 					}
 				}
 			}
@@ -507,7 +422,7 @@ func daemonize(logger zerolog.Logger, pidFile string) error {
 	}
 
 	// Fork process
-	logger.Info().Str("pid_file", pidFile).Msg("Starting in daemon mode")
+	log.Info().Str("pid_file", pidFile).Msg("Starting in daemon mode")
 
 	// Create new session and detach from terminal
 	// Note: In a full implementation, this would use proper Unix daemon techniques
@@ -517,11 +432,11 @@ func daemonize(logger zerolog.Logger, pidFile string) error {
 	pid := os.Getpid()
 	pidContent := fmt.Sprintf("%d\n", pid)
 
-	if err := os.WriteFile(pidFile, []byte(pidContent), 0644); err != nil {
-		return fmt.Errorf("failed to write PID file %s: %w", pidFile, err)
+	if err := os.WriteFile(pidFile, []byte(pidContent), 0o644); err != nil { // nolint:mnd
+		return fmt.Errorf("%w %s: %w", ErrFailedToWritePIDFile, pidFile, err)
 	}
 
-	logger.Info().Int("pid", pid).Str("pid_file", pidFile).Msg("Daemon started")
+	log.Info().Int("pid", pid).Str("pid_file", pidFile).Msg("Daemon started")
 
 	// Setup cleanup on exit
 	go func() {
@@ -532,7 +447,7 @@ func daemonize(logger zerolog.Logger, pidFile string) error {
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 		<-sigChan
 
-		logger.Info().Str("pid_file", pidFile).Msg("Cleaning up PID file")
+		log.Info().Str("pid_file", pidFile).Msg("Cleaning up PID file")
 	}()
 
 	return nil

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	"github.com/theopenlane/agent/internal/config"
-	"github.com/theopenlane/agent/version"
+	"github.com/theopenlane/agent/config"
+	"github.com/theopenlane/agent/internal/constants"
 	"github.com/theopenlane/core/pkg/enums"
 	"github.com/theopenlane/core/pkg/openlaneclient"
 )
@@ -23,11 +23,11 @@ type Client struct {
 // NewClient creates a new API client
 func NewClient(baseURL, apiKey string) (*Client, error) {
 	if baseURL == "" {
-		return nil, fmt.Errorf("base URL is required")
+		return nil, ErrBaseURLRequired
 	}
 
 	if apiKey == "" {
-		return nil, fmt.Errorf("API key is required")
+		return nil, ErrAPIKeyRequired
 	}
 
 	// Parse the base URL
@@ -52,7 +52,7 @@ func NewClient(baseURL, apiKey string) (*Client, error) {
 
 	return &Client{
 		client:    client,
-		userAgent: version.UserAgent(),
+		userAgent: constants.UserAgent(),
 	}, nil
 }
 
@@ -61,18 +61,20 @@ func (c *Client) Ping(ctx context.Context) error {
 	// Apply timeout to context
 	timeoutCtx, cancel := c.withTimeout(ctx)
 	defer cancel()
-	
+
 	// Test connectivity by getting organizations (basic query)
 	_, err := c.client.GetAllOrganizations(timeoutCtx)
 	if err != nil {
-		return fmt.Errorf("ping request failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrPingRequestFailed, err)
 	}
+
 	log.Debug().Msg("Ping request successful")
+
 	return nil
 }
 
 // ReportResults sends compliance check results to the API
-func (c *Client) ReportResults(ctx context.Context, agentID string, results []*config.Result) error {
+func (c *Client) ReportResults(ctx context.Context, results []*config.Result) error {
 	if len(results) == 0 {
 		return nil
 	}
@@ -91,6 +93,7 @@ func (c *Client) ReportResults(ctx context.Context, agentID string, results []*c
 	}
 
 	log.Info().Int("count", len(results)).Msg("All results reported")
+
 	return nil
 }
 
@@ -106,7 +109,7 @@ func (c *Client) RegisterAgent(ctx context.Context, agent JobRunnerRegistration)
 
 	resp, err := c.client.CreateJobRunner(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to register agent: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrAgentRegistrationFailed, err)
 	}
 
 	log.Info().Str("id", resp.CreateJobRunner.JobRunner.ID).Msg("Agent registered")
@@ -120,6 +123,7 @@ func (c *Client) RegisterAgent(ctx context.Context, agent JobRunnerRegistration)
 		CreatedAt: resp.CreateJobRunner.JobRunner.CreatedAt,
 		UpdatedAt: resp.CreateJobRunner.JobRunner.UpdatedAt,
 	}
+
 	return jr, nil
 }
 
@@ -133,10 +137,11 @@ func (c *Client) UpdateAgentStatus(ctx context.Context, agentID string, status A
 	_, err := c.client.UpdateJobRunner(ctx, agentID, input)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to update agent status")
-		return fmt.Errorf("failed to update agent status: %w", err)
+		return fmt.Errorf("%w: %w", ErrAgentStatusUpdateFailed, err)
 	}
 
 	log.Info().Str("status", status.Status).Msg("Agent status updated")
+
 	return nil
 }
 
@@ -155,39 +160,41 @@ func (c *Client) GetAgentConfig(ctx context.Context, agentID string) (*RemoteCon
 	scheduledJobs, err := c.getScheduledJobsForAgent(ctx, agentID)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to get scheduled jobs, returning basic config")
+
 		scheduledJobs = []*openlaneclient.ScheduledJob{}
 	}
 
 	// Convert scheduled jobs to remote checks
 	var remoteChecks []RemoteCheck
+
 	for _, job := range scheduledJobs {
 		if !job.Active {
 			continue // Skip inactive jobs
 		}
-		
+
 		schedule := ""
 		if job.Cron != nil {
 			schedule = *job.Cron
 		}
-		
+
 		check := RemoteCheck{
 			Name:           fmt.Sprintf("remote-job-%s", job.ID),
 			Description:    fmt.Sprintf("Scheduled job %s", job.ID),
 			ScheduledJobID: job.ID,
 			Schedule:       schedule,
 			Enabled:        job.Active,
-			
+
 			// Parse configuration if available
 			Settings: make(map[string]string),
 		}
-		
+
 		// Extract controls from job configuration if available
 		if job.Configuration != nil {
 			// Configuration parsing would depend on the actual structure
 			// For now, we'll use a basic approach
 			check.Settings["job_config"] = string(job.Configuration)
 		}
-		
+
 		remoteChecks = append(remoteChecks, check)
 	}
 
@@ -198,12 +205,13 @@ func (c *Client) GetAgentConfig(ctx context.Context, agentID string) (*RemoteCon
 		Checks:    remoteChecks,
 		Features: map[string]bool{
 			"remote_scheduling": true,
-			"control_sync":     true,
-			"log_streaming":    true,
+			"control_sync":      true,
+			"log_streaming":     true,
 		},
 	}
 
 	log.Info().Int("remote_checks", len(remoteChecks)).Msg("Retrieved remote agent configuration")
+
 	return config, nil
 }
 
@@ -215,7 +223,7 @@ func (c *Client) getScheduledJobsForAgent(ctx context.Context, agentID string) (
 
 	resp, err := c.client.GetScheduledJobs(ctx, nil, nil, where)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get scheduled jobs: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrScheduledJobsRetrievalFailed, err)
 	}
 
 	var scheduledJobs []*openlaneclient.ScheduledJob
@@ -238,7 +246,7 @@ func (c *Client) getScheduledJobsForAgent(ctx context.Context, agentID string) (
 // SetTimeout sets the HTTP client timeout
 func (c *Client) SetTimeout(timeout time.Duration) {
 	c.timeout = timeout
-	
+
 	// Create a new client with timeout if we need to recreate it
 	if c.client != nil {
 		// For production use, we would need to recreate the client with new timeout
@@ -260,6 +268,7 @@ func (c *Client) withTimeout(ctx context.Context) (context.Context, context.Canc
 	if c.timeout > 0 {
 		return context.WithTimeout(ctx, c.timeout)
 	}
+
 	return ctx, func() {} // No-op cancel function
 }
 
@@ -290,9 +299,10 @@ func (c *Client) createJobResult(ctx context.Context, result *config.Result) err
 
 	_, err := c.client.CreateJobResult(ctx, input)
 	if err != nil {
-		return fmt.Errorf("failed to create job result: %w", err)
+		return fmt.Errorf("%w: %w", ErrJobResultCreationFailed, err)
 	}
 
 	log.Debug().Msg("Created job result")
+
 	return nil
 }

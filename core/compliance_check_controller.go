@@ -4,25 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/theopenlane/agent/api"
-	"github.com/theopenlane/agent/internal/config"
-	"github.com/theopenlane/agent/internal/evidence"
+	"github.com/theopenlane/agent/config"
+	"github.com/theopenlane/agent/internal/platform"
+	"github.com/theopenlane/agent/internal/storage"
 	"github.com/theopenlane/core/pkg/openlaneclient"
 )
 
 // ComplianceCheckController manages the execution of a single compliance check
 // Similar to Buildkite's JobController but for compliance checks
 type ComplianceCheckController struct {
-	logger          zerolog.Logger
-	apiClient       *api.GraphQLClient
-	agentID         string
-	evidenceManager *evidence.EvidenceManager
+	apiClient        *api.GraphQLClient
+	agentID          string
+	storage          storage.Storage
+	evidenceService  *storage.EvidenceService
+	platformSelector *platform.Selector
 
 	// Check execution state
 	stateMtx  sync.Mutex
@@ -34,7 +38,7 @@ type ComplianceCheckController struct {
 	logMutex    sync.Mutex
 	logSequence uint64
 	logOffset   uint64
-	
+
 	// Current executing check context
 	currentCheck          *api.RemoteCheck
 	currentScheduledJobID string
@@ -51,13 +55,14 @@ const (
 )
 
 // NewComplianceCheckController creates a new compliance check controller
-func NewComplianceCheckController(logger zerolog.Logger, apiClient *api.GraphQLClient, agentID string, evidenceManager *evidence.EvidenceManager) *ComplianceCheckController {
+func NewComplianceCheckController(apiClient *api.GraphQLClient, agentID string, storage storage.Storage, evidenceService *storage.EvidenceService) *ComplianceCheckController {
 	return &ComplianceCheckController{
-		logger:          logger,
-		apiClient:       apiClient,
-		agentID:         agentID,
-		evidenceManager: evidenceManager,
-		state:           checkStateCreated,
+		apiClient:        apiClient,
+		agentID:          agentID,
+		storage:          storage,
+		evidenceService:  evidenceService,
+		platformSelector: platform.NewSelector(),
+		state:            checkStateCreated,
 	}
 }
 
@@ -76,7 +81,35 @@ func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check
 	c.setState(checkStateStarted)
 	c.startTime = time.Now()
 
-	c.logger.Info().Str("check", check.Name).Msg("Executing local check with enhanced features")
+	// Apply platform-specific configuration if available
+	platformVariant := c.platformSelector.SelectVariant(check)
+	if platformVariant != nil {
+		log.Info().Str("check", check.Name).Strs("platforms", platformVariant.Platforms).Msg("Applying platform-specific configuration")
+
+		// Create a copy of the check to avoid modifying the original
+		checkCopy := *check
+		c.platformSelector.ApplyPlatformVariant(&checkCopy, platformVariant)
+		check = &checkCopy
+	} else if len(check.PlatformVariants) > 0 {
+		// Check has platform variants but none match current platform
+		platformInfo := c.platformSelector.GetPlatformInfo()
+		log.Warn().Str("check", check.Name).Str("current_platform", platformInfo["platform"]).Msg("No platform variant matches current system, skipping check")
+
+		result := &config.Result{
+			CheckName:  check.Name,
+			ExecutedAt: c.startTime,
+			StartTime:  c.startTime,
+			EndTime:    time.Now(),
+			Controls:   check.Controls,
+			Tags:       check.Tags,
+			Error:      fmt.Sprintf("No platform variant available for %s", platformInfo["platform"]),
+			Passed:     false,
+		}
+
+		return result, ErrCheckNotSupportedOnPlatform
+	}
+
+	log.Info().Str("check", check.Name).Msg("Executing local check with enhanced features")
 
 	// Create the result object
 	result := &config.Result{
@@ -94,22 +127,43 @@ func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check
 		c.setState(checkStateFinished)
 	}()
 
-	// Execute the compliance check command
-	stdout, stderr, exitCode, err := c.executeLocalCommand(ctx, check)
+	// Handle different execution modes
+	var stdout, stderr string
+
+	var exitCode int
+
+	var err error
+
+	if platformVariant != nil && platformVariant.File != "" {
+		// File-based check (gitMDM pattern)
+		stdout, stderr, exitCode, err = c.executeFileCheck(check, platformVariant)
+	} else {
+		// Command-based check (existing pattern)
+		stdout, stderr, exitCode, err = c.executeLocalCommand(ctx, check)
+	}
 
 	result.ExitCode = exitCode
 	result.Stderr = stderr
 
 	if err != nil {
 		result.Error = err.Error()
+
 		c.setState(checkStateFailed)
-		return result, fmt.Errorf("check execution failed: %w", err)
+
+		return result, fmt.Errorf("%w: %w", ErrCheckExecutionTimeout, err)
 	}
 
-	// Parse the output as JSON
+	// Apply platform-specific result evaluation if configured
+	if platformVariant != nil {
+		if err := c.evaluatePlatformResult(stdout, exitCode, platformVariant, result); err != nil {
+			log.Error().Err(err).Str("check", check.Name).Msg("Platform result evaluation failed")
+		}
+	}
+
+	// Parse the output as JSON (existing logic)
 	if err := c.parseCheckOutput(stdout, result); err != nil {
 		result.Error = fmt.Sprintf("Failed to parse check output: %v", err)
-		c.logger.Error().Err(err).Str("check", check.Name).Msg("Failed to parse output")
+		log.Error().Err(err).Str("check", check.Name).Msg("Failed to parse output")
 
 		// Store raw output for debugging
 		result.Evidence = map[string]any{
@@ -121,17 +175,28 @@ func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check
 	// Determine pass/fail status
 	result.Passed = c.determinePassStatus(result)
 
-	// Handle evidence collection and upload
-	if err := c.handleEvidenceCollection(ctx, check, result, stdout, stderr); err != nil {
-		c.logger.Error().Err(err).Str("check", check.Name).Msg("Failed to handle evidence collection")
+	// Collect evidence files
+	evidenceFiles, err := c.handleEvidenceCollection(ctx, check, stdout, stderr)
+	if err != nil {
+		log.Error().Err(err).Str("check", check.Name).Msg("Failed to collect evidence")
+	}
+
+	// Store result with evidence using unified storage system
+	if c.storage != nil {
+		if err := c.storage.StoreResultWithEvidence(result, evidenceFiles); err != nil {
+			log.Error().Err(err).Str("check", check.Name).Msg("Failed to store result")
+		} else {
+			log.Debug().Str("check", check.Name).Msg("Result stored successfully")
+		}
 	}
 
 	// Execute pass/fail actions
 	if err := c.executeActions(ctx, check, result); err != nil {
-		c.logger.Error().Err(err).Str("check", check.Name).Msg("Failed to execute actions")
+		log.Error().Err(err).Str("check", check.Name).Msg("Failed to execute actions")
 	}
 
-	c.logger.Info().Str("check", check.Name).Int("exit_code", exitCode).Bool("passed", result.Passed).Msg("Local check completed")
+	log.Info().Str("check", check.Name).Int("exit_code", exitCode).Bool("passed", result.Passed).Msg("Local check completed")
+
 	return result, nil
 }
 
@@ -140,7 +205,7 @@ func (c *ComplianceCheckController) executeCheckCommon(ctx context.Context, chec
 	c.setState(checkStateStarted)
 	c.startTime = time.Now()
 
-	c.logger.Info().Str("check", check.Name).Msg("Executing check")
+	log.Info().Str("check", check.Name).Msg("Executing check")
 
 	// Create the result object
 	result := &config.Result{
@@ -160,7 +225,8 @@ func (c *ComplianceCheckController) executeCheckCommon(ctx context.Context, chec
 	}()
 
 	// Parse timeout
-	timeout := 5 * time.Minute // default
+	timeout := 5 * time.Minute // default // nolint:mnd
+
 	if check.Timeout != "" {
 		if d, err := time.ParseDuration(check.Timeout); err == nil {
 			timeout = d
@@ -181,14 +247,16 @@ func (c *ComplianceCheckController) executeCheckCommon(ctx context.Context, chec
 
 	if err != nil {
 		result.Error = err.Error()
+
 		c.setState(checkStateFailed)
-		return result, fmt.Errorf("check execution failed: %w", err)
+
+		return result, fmt.Errorf("%w: %w", ErrCheckExecutionTimeout, err)
 	}
 
 	// Parse the output as JSON (following our compliance check output format)
 	if err := c.parseCheckOutput(stdout, result); err != nil {
 		result.Error = fmt.Sprintf("Failed to parse check output: %v", err)
-		c.logger.Error().Err(err).Str("check", check.Name).Msg("Failed to parse output")
+		log.Error().Err(err).Str("check", check.Name).Msg("Failed to parse output")
 
 		// Store raw output for debugging
 		result.Evidence = map[string]any{
@@ -197,14 +265,22 @@ func (c *ComplianceCheckController) executeCheckCommon(ctx context.Context, chec
 		}
 	}
 
-	c.logger.Info().Str("check", check.Name).Int("exit_code", exitCode).Msg("Check completed")
+	log.Info().Str("check", check.Name).Int("exit_code", exitCode).Msg("Check completed")
+
 	return result, nil
 }
 
 // executeCommand executes the compliance check command
+// WARNING: This function executes arbitrary commands from the control system.
+// Only trusted control configurations should be processed.
 func (c *ComplianceCheckController) executeCommand(ctx context.Context, check *api.RemoteCheck) (string, string, int, error) {
-	// Prepare command
-	cmd := exec.CommandContext(ctx, check.Command, check.Args...)
+	// Validate command input for basic security
+	if check.Command == "" {
+		return "", "", -1, ErrInvalidCommand
+	}
+
+	// Prepare command (G204: This is intentional for compliance execution)
+	cmd := exec.CommandContext(ctx, check.Command, check.Args...) // #nosec G204
 
 	// Set working directory if specified
 	if check.WorkDir != "" {
@@ -234,7 +310,7 @@ func (c *ComplianceCheckController) executeCommand(ctx context.Context, check *a
 
 	cmd.Env = env
 
-	c.logger.Debug().Str("cmd", check.Command).Msg("Executing command")
+	log.Debug().Str("cmd", check.Command).Msg("Executing command")
 
 	// Execute command and capture output
 	var stdout, stderr strings.Builder
@@ -250,7 +326,7 @@ func (c *ComplianceCheckController) executeCommand(ctx context.Context, check *a
 			// Non-zero exit code is not necessarily an error for compliance checks
 			err = nil
 		} else {
-			return "", stderr.String(), -1, fmt.Errorf("failed to execute command: %w", err)
+			return "", stderr.String(), -1, fmt.Errorf("%w: %w", ErrFailedToExecuteCommand, err)
 		}
 	}
 
@@ -289,6 +365,7 @@ func (c *ComplianceCheckController) parseCheckOutput(output string, result *conf
 				},
 			},
 		}
+
 		return nil
 	}
 
@@ -316,7 +393,7 @@ func (c *ComplianceCheckController) parseCheckOutput(output string, result *conf
 
 		// Validate severity
 		if !c.isValidSeverity(finding.Severity) {
-			c.logger.Warn().Str("severity", string(finding.Severity)).Msg("Invalid severity, using medium")
+			log.Warn().Str("severity", string(finding.Severity)).Msg("Invalid severity, using medium")
 			finding.Severity = config.SeverityMedium
 		}
 
@@ -350,13 +427,6 @@ func (c *ComplianceCheckController) setState(state checkState) {
 	c.state = state
 }
 
-// getState returns the current state of the check
-func (c *ComplianceCheckController) getState() checkState {
-	c.stateMtx.Lock()
-	defer c.stateMtx.Unlock()
-	return c.state
-}
-
 // WriteLog writes log content for this check (similar to Buildkite's log streaming)
 func (c *ComplianceCheckController) WriteLog(ctx context.Context, logLine string) error {
 	c.logMutex.Lock()
@@ -367,12 +437,8 @@ func (c *ComplianceCheckController) WriteLog(ctx context.Context, logLine string
 	if c.currentCheck != nil {
 		checkName = c.currentCheck.Name
 	}
-	
-	c.logger.Info().
-		Str("check", checkName).
-		Str("output", logLine).
-		Uint64("sequence", c.logSequence).
-		Msg("Check output")
+
+	log.Info().Str("check", checkName).Str("output", logLine).Uint64("sequence", c.logSequence).Msg("Check output")
 
 	// Store log for potential platform streaming
 	c.streamLogToPlatform(ctx, logLine)
@@ -398,25 +464,22 @@ func (c *ComplianceCheckController) streamLogToPlatform(ctx context.Context, log
 	}
 
 	// Create structured log entry for platform
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":        time.Now().UTC(),
-		"check_name":      checkName,
+		"check_name":       checkName,
 		"scheduled_job_id": c.currentScheduledJobID,
-		"sequence":        c.logSequence,
-		"offset":          c.logOffset,
-		"content":         logLine,
-		"level":           "info",
+		"sequence":         c.logSequence,
+		"offset":           c.logOffset,
+		"content":          logLine,
+		"level":            "info",
 	}
 
 	// In a production implementation, this would stream to the platform
 	// For now, we structure the log appropriately for future streaming
-	c.logger.Debug().
-		Interface("log_entry", logEntry).
-		Msg("Prepared log entry for platform streaming")
-
+	log.Debug().Interface("log_entry", logEntry).Msg("Prepared log entry for platform streaming")
 	// TODO: Implement actual platform streaming when GraphQL log streaming endpoint is available
 	// This would involve:
-	// 1. Batching logs to reduce API calls  
+	// 1. Batching logs to reduce API calls
 	// 2. Buffering logs during network issues
 	// 3. Retry logic for failed streams
 	// 4. Compression for large log volumes
@@ -457,7 +520,7 @@ func (c *ComplianceCheckController) executeLocalCommand(ctx context.Context, che
 	// Parse timeout
 	timeout := check.Timeout
 	if timeout == 0 {
-		timeout = 5 * time.Minute // default
+		timeout = 5 * time.Minute // default // nolint:mnd
 	}
 
 	// Create execution context with timeout
@@ -466,8 +529,8 @@ func (c *ComplianceCheckController) executeLocalCommand(ctx context.Context, che
 
 	c.setState(checkStateRunning)
 
-	// Prepare command
-	cmd := exec.CommandContext(execCtx, check.Command, check.Args...)
+	// Prepare command (G204: This is intentional for compliance execution)
+	cmd := exec.CommandContext(execCtx, check.Command, check.Args...) // #nosec G204
 
 	// Set working directory if specified
 	if check.WorkDir != "" {
@@ -497,7 +560,7 @@ func (c *ComplianceCheckController) executeLocalCommand(ctx context.Context, che
 
 	cmd.Env = env
 
-	c.logger.Debug().Str("cmd", check.Command).Msg("Executing local command")
+	log.Debug().Str("cmd", check.Command).Msg("Executing local command")
 
 	// Execute command and capture output
 	var stdout, stderr strings.Builder
@@ -513,7 +576,7 @@ func (c *ComplianceCheckController) executeLocalCommand(ctx context.Context, che
 			// Non-zero exit code is not necessarily an error for compliance checks
 			err = nil
 		} else {
-			return "", stderr.String(), -1, fmt.Errorf("failed to execute command: %w", err)
+			return "", stderr.String(), -1, fmt.Errorf("%w: %w", ErrFailedToExecuteCommand, err)
 		}
 	}
 
@@ -542,87 +605,61 @@ func (c *ComplianceCheckController) determinePassStatus(result *config.Result) b
 	return true
 }
 
-// handleEvidenceCollection collects and uploads evidence files
-func (c *ComplianceCheckController) handleEvidenceCollection(ctx context.Context, check *config.Check, result *config.Result, stdout, stderr string) error {
-	if c.evidenceManager == nil {
-		c.logger.Debug().Msg("Evidence manager not available, skipping evidence collection")
-		return nil
+// handleEvidenceCollection collects evidence files using the new unified storage system
+func (c *ComplianceCheckController) handleEvidenceCollection(ctx context.Context, check *config.Check, stdout, stderr string) ([]storage.EvidenceFile, error) {
+	if c.evidenceService == nil {
+		log.Debug().Msg("Evidence service not available, skipping evidence collection")
+		return nil, nil
 	}
 
-	var allEvidenceFiles []*evidence.EvidenceFile
-	var evidenceResults []*config.EvidenceFileResult
+	var allEvidenceFiles []storage.EvidenceFile
 
 	// Collect evidence from configured paths
 	if len(check.EvidencePaths) > 0 {
-		evidenceFiles, err := c.evidenceManager.CollectEvidence(check.EvidencePaths, check.Name)
+		evidenceFiles, err := c.evidenceService.CollectEvidence(ctx, check.EvidencePaths)
 		if err != nil {
-			c.logger.Error().Err(err).Msg("Failed to collect evidence from configured paths")
+			log.Error().Err(err).Msg("Failed to collect evidence from configured paths")
 		} else {
 			allEvidenceFiles = append(allEvidenceFiles, evidenceFiles...)
 		}
 	}
 
 	// Create evidence from command output
-	outputEvidenceFiles, err := c.evidenceManager.CreateEvidenceFromOutput(check.Name, stdout, stderr)
+	outputEvidenceFiles, err := c.evidenceService.CreateEvidenceFromOutput(check.Name, []byte(stdout), []byte(stderr))
 	if err != nil {
-		c.logger.Error().Err(err).Msg("Failed to create evidence from output")
+		log.Error().Err(err).Msg("Failed to create evidence from output")
 	} else {
 		allEvidenceFiles = append(allEvidenceFiles, outputEvidenceFiles...)
 	}
 
-	// Upload evidence files for each control
-	for _, controlID := range check.Controls {
-		uploadResults, err := c.evidenceManager.UploadEvidence(ctx, allEvidenceFiles, controlID)
-		if err != nil {
-			c.logger.Error().Err(err).Str("control_id", controlID).Msg("Failed to upload evidence")
-			continue
-		}
+	log.Debug().Int("evidence_files", len(allEvidenceFiles)).Str("check", check.Name).Msg("Evidence collection completed")
 
-		// Convert upload results to evidence file results
-		for i, uploadResult := range uploadResults {
-			if i < len(allEvidenceFiles) {
-				evidenceResult := &config.EvidenceFileResult{
-					FilePath:    allEvidenceFiles[i].Path,
-					FileID:      uploadResult.FileID,
-					ControlID:   controlID,
-					Size:        uploadResult.Size,
-					ContentType: uploadResult.ContentType,
-					Checksum:    uploadResult.Checksum,
-					UploadedAt:  uploadResult.UploadedAt,
-					Metadata:    uploadResult.Metadata,
-				}
-				evidenceResults = append(evidenceResults, evidenceResult)
-			}
-		}
-	}
-
-	result.EvidenceFiles = evidenceResults
-	c.logger.Info().Int("evidence_files", len(evidenceResults)).Str("check", check.Name).Msg("Evidence collection completed")
-
-	return nil
+	return allEvidenceFiles, nil
 }
 
 // executeActions executes the appropriate actions based on pass/fail status
 func (c *ComplianceCheckController) executeActions(ctx context.Context, check *config.Check, result *config.Result) error {
 	var actionConfig *config.ActionConfig
 
-	if result.Passed && check.OnPass != nil {
+	switch {
+	case result.Passed && check.OnPass != nil:
 		actionConfig = check.OnPass
-		c.logger.Info().Str("check", check.Name).Msg("Executing pass actions")
-	} else if !result.Passed && check.OnFail != nil {
+		log.Info().Str("check", check.Name).Msg("Executing pass actions")
+	case !result.Passed && check.OnFail != nil:
 		actionConfig = check.OnFail
-		c.logger.Info().Str("check", check.Name).Msg("Executing fail actions")
-	} else {
-		c.logger.Debug().Str("check", check.Name).Bool("passed", result.Passed).Msg("No actions configured for this outcome")
+		log.Info().Str("check", check.Name).Msg("Executing fail actions")
+	default:
+		log.Debug().Str("check", check.Name).Bool("passed", result.Passed).Msg("No actions configured for this outcome")
 		return nil
 	}
 
 	// Execute commands
 	for _, command := range actionConfig.Commands {
 		if err := c.executeActionCommand(ctx, command, check.Name); err != nil {
-			c.logger.Error().Err(err).Str("command", command.Name).Msg("Action command failed")
+			log.Error().Err(err).Str("command", command.Name).Msg("Action command failed")
+
 			if !command.ContinueOnError {
-				return fmt.Errorf("action command %s failed: %w", command.Name, err)
+				return fmt.Errorf("%w %s: %w", ErrFailedToExecuteAction, command.Name, err)
 			}
 		}
 	}
@@ -631,7 +668,7 @@ func (c *ComplianceCheckController) executeActions(ctx context.Context, check *c
 	if actionConfig.UpdateControlStatus {
 		for _, controlID := range check.Controls {
 			if err := c.updateControlStatus(ctx, controlID, result.Passed); err != nil {
-				c.logger.Error().Err(err).Str("control_id", controlID).Msg("Failed to update control status")
+				log.Error().Err(err).Str("control_id", controlID).Msg("Failed to update control status")
 			}
 		}
 	}
@@ -644,15 +681,15 @@ func (c *ComplianceCheckController) executeActionCommand(ctx context.Context, ac
 	// Use configured timeout or default
 	timeout := actionCmd.Timeout
 	if timeout == 0 {
-		timeout = 5 * time.Minute // default
+		timeout = 5 * time.Minute // default // nolint:mnd
 	}
 
 	// Create execution context with timeout
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Prepare command
-	cmd := exec.CommandContext(execCtx, actionCmd.Command, actionCmd.Args...)
+	// Prepare command (G204: This is intentional for compliance execution)
+	cmd := exec.CommandContext(execCtx, actionCmd.Command, actionCmd.Args...) // #nosec G204
 
 	// Set working directory if specified
 	if actionCmd.WorkDir != "" {
@@ -672,28 +709,28 @@ func (c *ComplianceCheckController) executeActionCommand(ctx context.Context, ac
 
 	cmd.Env = env
 
-	c.logger.Info().Str("command", actionCmd.Command).Str("action", actionCmd.Name).Msg("Executing action command")
+	log.Info().Str("command", actionCmd.Command).Str("action", actionCmd.Name).Msg("Executing action command")
 
 	// Execute command
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		c.logger.Error().Err(err).Str("output", string(output)).Msg("Action command failed")
-		return fmt.Errorf("command execution failed: %w", err)
+		log.Error().Err(err).Str("output", string(output)).Msg("Action command failed")
+		return fmt.Errorf("%w: %w", ErrFailedToExecuteCommand, err)
 	}
 
-	c.logger.Info().Str("action", actionCmd.Name).Msg("Action command completed successfully")
+	log.Info().Str("action", actionCmd.Name).Msg("Action command completed successfully")
+
 	return nil
 }
-
 
 // updateControlStatus updates the status of a control based on the check result
 func (c *ComplianceCheckController) updateControlStatus(ctx context.Context, controlID string, passed bool) error {
 	if c.apiClient == nil {
-		c.logger.Debug().Msg("API client not available, skipping control status update")
+		log.Debug().Msg("API client not available, skipping control status update")
 		return nil
 	}
 
-	c.logger.Info().Str("control_id", controlID).Bool("passed", passed).Msg("Updating control status")
+	log.Info().Str("control_id", controlID).Bool("passed", passed).Msg("Updating control status")
 
 	// This would update the control status in the Openlane platform
 	// The exact implementation would depend on the available GraphQL mutations
@@ -703,7 +740,110 @@ func (c *ComplianceCheckController) updateControlStatus(ctx context.Context, con
 	}
 
 	// Placeholder for actual control update
-	c.logger.Info().Str("control_id", controlID).Str("status", status).Msg("Control status update (placeholder)")
+	log.Info().Str("control_id", controlID).Str("status", status).Msg("Control status update (placeholder)")
 
 	return nil
+}
+
+// executeFileCheck performs a file-based check following gitMDM patterns
+func (c *ComplianceCheckController) executeFileCheck(check *config.Check, variant *config.PlatformVariant) (string, string, int, error) {
+	log.Debug().Str("file", variant.File).Str("check", check.Name).Msg("Executing file-based check")
+
+	// Read the file content
+	content, err := os.ReadFile(variant.File)
+	if err != nil {
+		return "", fmt.Sprintf("Failed to read file %s: %v", variant.File, err), 1, nil
+	}
+
+	contentStr := string(content)
+
+	return contentStr, "", 0, nil
+}
+
+// evaluatePlatformResult evaluates check results using platform-specific patterns
+func (c *ComplianceCheckController) evaluatePlatformResult(stdout string, exitCode int, variant *config.PlatformVariant, result *config.Result) error {
+	// Handle exit code evaluation
+	if variant.ExitCode != nil {
+		expectedExitCode := *variant.ExitCode
+		if exitCode != expectedExitCode {
+			result.Passed = false
+			result.Findings = append(result.Findings, config.Finding{
+				Resource:    "exit_code",
+				Title:       "Unexpected Exit Code",
+				Description: fmt.Sprintf("Expected exit code %d, got %d", expectedExitCode, exitCode),
+				Severity:    config.SeverityHigh,
+				Status:      config.StatusOpen,
+				Details: map[string]any{
+					"expected_exit_code": expectedExitCode,
+					"actual_exit_code":   exitCode,
+				},
+			})
+		}
+	}
+
+	// Handle includes pattern (pass if matches)
+	if variant.Includes != "" {
+		matched, err := regexp.MatchString(variant.Includes, stdout)
+		if err != nil {
+			return fmt.Errorf("%w %s: %w", ErrInvalidRegex, variant.Includes, err)
+		}
+
+		if !matched {
+			result.Passed = false
+			result.Findings = append(result.Findings, config.Finding{
+				Resource:    "stdout_pattern",
+				Title:       "Required Pattern Not Found",
+				Description: fmt.Sprintf("Output did not match required pattern: %s", variant.Includes),
+				Severity:    config.SeverityHigh,
+				Status:      config.StatusOpen,
+				Details: map[string]any{
+					"required_pattern": variant.Includes,
+					"output_preview":   truncateString(stdout, 200), // nolint:mnd
+				},
+			})
+		}
+	}
+
+	// Handle excludes pattern (fail if matches)
+	if variant.Excludes != "" {
+		matched, err := regexp.MatchString(variant.Excludes, stdout)
+		if err != nil {
+			return fmt.Errorf("%w %s: %w", ErrInvalidRegex, variant.Excludes, err)
+		}
+
+		if matched {
+			result.Passed = false
+			result.Findings = append(result.Findings, config.Finding{
+				Resource:    "stdout_pattern",
+				Title:       "Prohibited Pattern Found",
+				Description: fmt.Sprintf("Output matched prohibited pattern: %s", variant.Excludes),
+				Severity:    config.SeverityHigh,
+				Status:      config.StatusOpen,
+				Details: map[string]any{
+					"prohibited_pattern": variant.Excludes,
+					"output_preview":     truncateString(stdout, 200), // nolint:mnd
+				},
+			})
+		}
+	}
+
+	// Add remediation steps if check failed and remediation is available
+	if !result.Passed && len(variant.Remediation) > 0 {
+		if result.Evidence == nil {
+			result.Evidence = make(map[string]any)
+		}
+
+		result.Evidence["remediation_steps"] = variant.Remediation
+	}
+
+	return nil
+}
+
+// truncateString truncates a string to a maximum length
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+
+	return s[:maxLen] + "..." // nolint:mnd
 }

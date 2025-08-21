@@ -1,0 +1,70 @@
+agentName: production-compliance-agent
+apiUrl: https://api.theopenlane.io
+checks:
+    - command: ./scripts/check-disk-encryption.sh
+      continueOnError: false
+      controls:
+        - SOC2:CC6.7
+        - ISO27001:A.10.1.1
+        - NIST:SC-28
+      description: Verify that full disk encryption is enabled on the system
+      enabled: true
+      env:
+        - ENCRYPTION_POLICY=required
+      evidencePaths:
+        - ./evidence/disk-encryption-check/
+      name: disk-encryption-check
+      onFail:
+        commands:
+            - args:
+                - --type
+                - encryption
+                - --severity
+                - high
+              command: ./scripts/create-incident.sh
+              continueOnError: false
+              name: create-security-incident
+              timeout: 60000000000
+        updateControlStatus: true
+        uploadEvidence: true
+      onPass:
+        updateControlStatus: true
+        uploadEvidence: true
+      schedule: 0 6 * * *
+      tags:
+        - encryption
+        - storage
+        - host-security
+      timeout: 300000000000
+dataDir: ./data
+defaultTimeout: 300000000000
+evidence:
+    compressFiles: false
+    enabled: true
+    maxFileSize: 104857600
+    retentionPeriod: 2592000000000000
+identity:
+    cacheTimeout: 86400000000000
+    enabled: true
+    fallbackToHostname: true
+logLevel: info
+maxConcurrency: 3
+offline:
+    bufferDir: ./buffer
+    bufferRetentionPeriod: 0
+    connectivityCheckUrl: ""
+    connectivityInterval: 30000000000
+    maxRetries: 5
+    mode: normal
+    outputDir: ./results
+    outputFormat: json
+    syncInterval: 300000000000
+pollInterval: 60000000000
+registrationToken: ${OPENLANE_AGENT_REGISTRATIONTOKEN}
+retry:
+    initialDelay: 1000000000
+    maxAttempts: 5
+    maxDelay: 30000000000
+    multiplier: 2
+    strategy: exponential
+spawn: 1

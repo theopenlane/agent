@@ -6,14 +6,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/theopenlane/agent/internal/config"
+	"github.com/rs/zerolog/log"
+	"github.com/theopenlane/agent/config"
 )
 
 // Scheduler handles scheduling of compliance checks
 type Scheduler struct {
 	checks map[string]*ScheduledCheck
-	logger zerolog.Logger
 }
 
 // ScheduledCheck wraps a Check with scheduling information
@@ -26,10 +25,9 @@ type ScheduledCheck struct {
 }
 
 // NewScheduler creates a new scheduler
-func NewScheduler(log zerolog.Logger) *Scheduler {
+func NewScheduler() *Scheduler {
 	return &Scheduler{
 		checks: make(map[string]*ScheduledCheck),
-		logger: log,
 	}
 }
 
@@ -49,19 +47,21 @@ func (s *Scheduler) AddCheck(check *config.Check) error {
 		NextRun: nextRun,
 	}
 
-	s.logger.Debug().Str("check_name", check.Name).Time("next_run", nextRun).Msg("Added check")
+	log.Debug().Str("check_name", check.Name).Time("next_run", nextRun).Msg("Added check")
+
 	return nil
 }
 
 // RemoveCheck removes a check from the scheduler
 func (s *Scheduler) RemoveCheck(name string) {
 	delete(s.checks, name)
-	s.logger.Debug().Str("check_name", name).Msg("Removed check from scheduler")
+	log.Debug().Str("check_name", name).Msg("Removed check from scheduler")
 }
 
 // GetDueChecks returns checks that are due to run
 func (s *Scheduler) GetDueChecks() []*config.Check {
 	now := time.Now()
+
 	var dueChecks []*config.Check
 
 	for _, scheduled := range s.checks {
@@ -84,7 +84,7 @@ func (s *Scheduler) MarkRunning(checkName string) {
 func (s *Scheduler) MarkCompleted(checkName string) error {
 	scheduled, exists := s.checks[checkName]
 	if !exists {
-		return fmt.Errorf("check %s not found in scheduler", checkName)
+		return fmt.Errorf("%w: %s", ErrCheckNotFoundInScheduler, checkName)
 	}
 
 	now := time.Now()
@@ -99,7 +99,8 @@ func (s *Scheduler) MarkCompleted(checkName string) error {
 	}
 
 	scheduled.NextRun = nextRun
-	s.logger.Debug().Str("check_name", checkName).Time("next_run", nextRun).Msg("Check completed")
+	log.Debug().Str("check_name", checkName).Time("next_run", nextRun).Msg("Check completed")
+
 	return nil
 }
 
@@ -107,7 +108,7 @@ func (s *Scheduler) MarkCompleted(checkName string) error {
 func (s *Scheduler) GetNextRunTime(checkName string) (time.Time, error) {
 	scheduled, exists := s.checks[checkName]
 	if !exists {
-		return time.Time{}, fmt.Errorf("check %s not found in scheduler", checkName)
+		return time.Time{}, fmt.Errorf("%w: %s", ErrCheckNotFoundInScheduler, checkName)
 	}
 
 	return scheduled.NextRun, nil
@@ -122,19 +123,18 @@ func (s *Scheduler) GetScheduledChecks() map[string]*ScheduledCheck {
 func (s *Scheduler) calculateNextRun(cronExpr string, from time.Time) (time.Time, error) {
 	// This is a simplified cron parser
 	// In production, you'd want to use a proper cron library like robfig/cron
-
 	parts := strings.Fields(cronExpr)
-	if len(parts) != 5 {
-		return time.Time{}, fmt.Errorf("invalid cron expression: %s (expected 5 parts)", cronExpr)
+	if len(parts) != 5 { // nolint:mnd
+		return time.Time{}, fmt.Errorf("%w: %s (expected 5 parts)", ErrInvalidCronExpression, cronExpr)
 	}
 
-	// Parse: minute hour day month weekday
-	minute, err := s.parseCronField(parts[0], 0, 59)
+	// Parse: minValute hour day month weekday
+	minValute, err := s.parseCronField(parts[0], 0, 59) // nolint:mnd
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid minute field: %w", err)
+		return time.Time{}, fmt.Errorf("invalid minValute field: %w", err)
 	}
 
-	hour, err := s.parseCronField(parts[1], 0, 23)
+	hour, err := s.parseCronField(parts[1], 0, 23) // nolint:mnd
 	if err != nil {
 		return time.Time{}, fmt.Errorf("invalid hour field: %w", err)
 	}
@@ -147,23 +147,24 @@ func (s *Scheduler) calculateNextRun(cronExpr string, from time.Time) (time.Time
 	next := from.Add(1 * time.Minute).Truncate(time.Minute)
 
 	// Simple scheduling logic
-	if minute.isWildcard && hour.isWildcard {
-		// Run every minute (for testing)
+	if minValute.isWildcard && hour.isWildcard {
+		// Run every minValute (for testing)
 		return next, nil
 	}
 
-	if minute.isInterval {
-		// Every X minutes
-		minutesToAdd := minute.interval - (next.Minute() % minute.interval)
-		if minutesToAdd == minute.interval {
-			minutesToAdd = 0
+	if minValute.isInterval {
+		// Every X minValutes
+		minValutesToAdd := minValute.interval - (next.Minute() % minValute.interval)
+		if minValutesToAdd == minValute.interval {
+			minValutesToAdd = 0
 		}
-		return next.Add(time.Duration(minutesToAdd) * time.Minute), nil
+
+		return next.Add(time.Duration(minValutesToAdd) * time.Minute), nil
 	}
 
-	if hour.isInterval && !minute.isWildcard {
-		// Every X hours at specific minute
-		targetMinute := minute.value
+	if hour.isInterval && !minValute.isWildcard {
+		// Every X hours at specific minValute
+		targetMinute := minValute.value
 		nextHour := next.Hour()
 
 		if hour.interval > 0 {
@@ -171,10 +172,11 @@ func (s *Scheduler) calculateNextRun(cronExpr string, from time.Time) (time.Time
 			if hoursToAdd == hour.interval {
 				hoursToAdd = 0
 			}
+
 			next = next.Add(time.Duration(hoursToAdd) * time.Hour)
 		}
 
-		// Set to target minute
+		// Set to target minValute
 		next = time.Date(next.Year(), next.Month(), next.Day(), next.Hour(), targetMinute, 0, 0, next.Location())
 
 		// If we've passed the target time today, move to next occurrence
@@ -182,26 +184,26 @@ func (s *Scheduler) calculateNextRun(cronExpr string, from time.Time) (time.Time
 			if hour.interval > 0 {
 				next = next.Add(time.Duration(hour.interval) * time.Hour)
 			} else {
-				next = next.Add(24 * time.Hour)
+				next = next.Add(24 * time.Hour) // nolint:mnd
 			}
 		}
 
 		return next, nil
 	}
 
-	// Specific time (hour and minute)
-	if !minute.isWildcard && !hour.isWildcard && !minute.isInterval && !hour.isInterval {
-		next = time.Date(next.Year(), next.Month(), next.Day(), hour.value, minute.value, 0, 0, next.Location())
+	// Specific time (hour and minValute)
+	if !minValute.isWildcard && !hour.isWildcard && !minValute.isInterval && !hour.isInterval {
+		next = time.Date(next.Year(), next.Month(), next.Day(), hour.value, minValute.value, 0, 0, next.Location())
 
 		// If we've passed this time today, schedule for tomorrow
 		if next.Before(from) {
-			next = next.Add(24 * time.Hour)
+			next = next.Add(24 * time.Hour) // nolint:mnd
 		}
 
 		return next, nil
 	}
 
-	// Default: run in 1 minute (fallback)
+	// Default: run in 1 minValute (fallback)
 	return from.Add(1 * time.Minute), nil
 }
 
@@ -213,7 +215,7 @@ type cronField struct {
 }
 
 // parseCronField parses a single field from a cron expression
-func (s *Scheduler) parseCronField(field string, min, max int) (cronField, error) {
+func (s *Scheduler) parseCronField(field string, minVal, maxVal int) (cronField, error) {
 	result := cronField{}
 
 	if field == "*" {
@@ -224,31 +226,34 @@ func (s *Scheduler) parseCronField(field string, min, max int) (cronField, error
 	if strings.HasPrefix(field, "*/") {
 		// Interval: */5 means every 5 units
 		intervalStr := field[2:]
+
 		interval, err := strconv.Atoi(intervalStr)
 		if err != nil {
-			return result, fmt.Errorf("invalid interval: %s", field)
+			return result, fmt.Errorf("%w: %s", ErrInvalidInterval, field)
 		}
 
-		if interval < 1 || interval > max {
-			return result, fmt.Errorf("interval %d out of range [1, %d]", interval, max)
+		if interval < 1 || interval > maxVal {
+			return result, fmt.Errorf("%w: %d out of range [1, %d]", ErrIntervalOutOfRange, interval, maxVal)
 		}
 
 		result.isInterval = true
 		result.interval = interval
+
 		return result, nil
 	}
 
 	// Specific value
 	value, err := strconv.Atoi(field)
 	if err != nil {
-		return result, fmt.Errorf("invalid number: %s", field)
+		return result, fmt.Errorf("%w: %s", ErrInvalidNumber, field)
 	}
 
-	if value < min || value > max {
-		return result, fmt.Errorf("value %d out of range [%d, %d]", value, min, max)
+	if value < minVal || value > maxVal {
+		return result, fmt.Errorf("%w: %d out of range [%d, %d]", ErrValueOutOfRange, value, minVal, maxVal)
 	}
 
 	result.value = value
+
 	return result, nil
 }
 
@@ -267,6 +272,7 @@ func (s *Scheduler) GetStats() map[string]any {
 		if now.After(scheduled.NextRun) && !scheduled.Running {
 			dueCount++
 		}
+
 		if scheduled.Running {
 			runningCount++
 		}
@@ -282,5 +288,6 @@ func (s *Scheduler) GetStats() map[string]any {
 
 	stats["due_checks"] = dueCount
 	stats["running_checks"] = runningCount
+
 	return stats
 }

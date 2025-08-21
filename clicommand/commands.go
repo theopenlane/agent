@@ -4,17 +4,17 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/urfave/cli"
+	cli "github.com/urfave/cli/v3"
 )
 
 // AgentCommands are all the agent commands
-var AgentCommands = []cli.Command{
+var AgentCommands = []*cli.Command{
 	{
 		Name:        "start",
 		Usage:       "Starts the Openlane compliance agent",
 		Description: startDescription,
 		Flags:       StartFlags,
-		Action:      StartAction,
+		Action:      StartAction, // StartAction will be refactored next if needed
 	},
 	{
 		Name:        "stop",
@@ -41,7 +41,7 @@ var AgentCommands = []cli.Command{
 		Name:        "config",
 		Usage:       "Manage agent configuration",
 		Description: "Commands for managing agent configuration",
-		Subcommands: []cli.Command{
+		Commands: []*cli.Command{
 			{
 				Name:        "init",
 				Usage:       "Initialize a new agent configuration",
@@ -64,13 +64,6 @@ var AgentCommands = []cli.Command{
 				Action:      ConfigShowAction,
 			},
 		},
-	},
-	{
-		Name:        "sync-controls",
-		Usage:       "Synchronize controls from agent.yaml with Openlane system",
-		Description: "Synchronizes the controls specified in agent.yaml checks with the Openlane platform. It validates control references, matches existing controls, creates new controls for unmatched references, and provides detailed reporting.",
-		Flags:       SyncControlsFlags,
-		Action:      SyncControlsAction,
 	},
 	{
 		Name:        "version",

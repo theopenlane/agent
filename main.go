@@ -3,12 +3,12 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
 
 	"github.com/theopenlane/agent/clicommand"
-	"github.com/theopenlane/agent/version"
-	"github.com/urfave/cli"
+	"github.com/theopenlane/agent/internal/constants"
+	cli "github.com/urfave/cli/v3"
 )
 
 const appHelpTemplate = `Usage:
@@ -46,30 +46,16 @@ Options:
 {{ end -}}
 `
 
-func printVersion(c *cli.Context) {
-	fmt.Fprintf(c.App.Writer, "%s version %s\n", c.App.Name, version.FullVersion())
-}
-
 func main() {
-	cli.AppHelpTemplate = appHelpTemplate
-	cli.CommandHelpTemplate = commandHelpTemplate
-	cli.SubcommandHelpTemplate = subcommandHelpTemplate
-	cli.VersionPrinter = printVersion
-
-	app := cli.NewApp()
-	app.Name = "openlane-agent"
-	app.Version = version.Version
-	app.Commands = clicommand.AgentCommands
-	app.ErrWriter = os.Stderr
-
-	// When a sub command can't be found
-	app.CommandNotFound = func(c *cli.Context, command string) {
-		fmt.Fprintf(app.ErrWriter, "openlane-agent: unknown subcommand %q\n", command)
-		fmt.Fprintf(app.ErrWriter, "Run '%s --help' for usage.\n", c.App.Name)
-		os.Exit(1)
+	root := &cli.Command{
+		Name:        "openlane-agent",
+		Version:     constants.AgentVersion,
+		Commands:    clicommand.AgentCommands,
+		Description: "Openlane compliance agent",
 	}
 
-	if err := app.Run(os.Args); err != nil {
+	// Run the CLI
+	if err := root.Run(context.Background(), os.Args); err != nil {
 		os.Exit(clicommand.PrintMessageAndReturnExitCode(err))
 	}
 }

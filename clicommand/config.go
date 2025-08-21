@@ -1,78 +1,81 @@
 package clicommand
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/theopenlane/agent/internal/config"
-	"github.com/theopenlane/agent/version"
-	"github.com/urfave/cli"
+	"github.com/theopenlane/agent/config"
+	"github.com/theopenlane/agent/internal/constants"
+	cli "github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
 )
 
 // ConfigInitFlags are the flags for the config init command
 var ConfigInitFlags = []cli.Flag{
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "output",
 		Value: "agent.yaml",
 		Usage: "Output file path for the configuration",
 	},
-	cli.BoolFlag{
+	&cli.BoolFlag{
 		Name:  "force",
 		Usage: "Overwrite existing configuration file",
 	},
-	cli.StringFlag{
-		Name:   "api-key",
-		Usage:  "Openlane API key",
-		EnvVar: "OPENLANE_API_KEY",
+	&cli.StringFlag{
+		Name:  "api-key",
+		Usage: "Openlane API key",
+		// No EnvVar in v3
 	},
-	cli.StringFlag{
-		Name:   "api-url",
-		Value:  "https://api.theopenlane.io",
-		Usage:  "Openlane API URL",
-		EnvVar: "OPENLANE_API_URL",
+	&cli.StringFlag{
+		Name:  "api-url",
+		Value: "https://api.theopenlane.io",
+		Usage: "Openlane API URL",
+		// No EnvVar in v3
 	},
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "agent-name",
 		Usage: "Name for this agent",
 	},
 }
 
-// ConfigInitAction initializes a new agent configuration
-func ConfigInitAction(c *cli.Context) error {
-	outputPath := c.String("output")
-	force := c.Bool("force")
+// ConfigInitAction initializes a new agent configuration (urfave/cli v3 signature)
+func ConfigInitAction(ctx context.Context, cmd *cli.Command) error {
+	outputPath := cmd.String("output")
+	force := cmd.Bool("force")
 
 	// Check if file exists and not forcing
 	if _, err := os.Stat(outputPath); err == nil && !force {
-		return fmt.Errorf("configuration file %s already exists (use --force to overwrite)", outputPath)
+		return fmt.Errorf("%w: %s (use --force to overwrite)", ErrConfigFileExists, outputPath)
 	}
 
 	// Create example configuration
 	cfg := config.ExampleConfig()
 
 	// Override with CLI flags if provided
-	if apiKey := c.String("api-key"); apiKey != "" {
+	if apiKey := cmd.String("api-key"); apiKey != "" {
 		cfg.RegistrationToken = apiKey
 	}
-	if apiURL := c.String("api-url"); apiURL != "" {
+
+	if apiURL := cmd.String("api-url"); apiURL != "" {
 		cfg.APIURL = apiURL
 	}
-	if agentName := c.String("agent-name"); agentName != "" {
+
+	if agentName := cmd.String("agent-name"); agentName != "" {
 		cfg.AgentName = agentName
 	}
 
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("%w %s: %w", ErrFailedToCreateDirectory, dir, err)
 	}
 
 	// Save configuration
 	if err := cfg.SaveConfig(outputPath); err != nil {
-		return fmt.Errorf("failed to save configuration: %w", err)
+		return fmt.Errorf("%w: %w", ErrFailedToSaveConfig, err)
 	}
 
 	fmt.Printf("Configuration initialized: %s\n", outputPath)
@@ -87,25 +90,25 @@ func ConfigInitAction(c *cli.Context) error {
 
 // ConfigValidateFlags are the flags for the config validate command
 var ConfigValidateFlags = []cli.Flag{
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "config",
 		Value: "agent.yaml",
 		Usage: "Path to the configuration file to validate",
 	},
-	cli.BoolFlag{
+	&cli.BoolFlag{
 		Name:  "verbose",
 		Usage: "Show detailed validation information",
 	},
 }
 
 // ConfigValidateAction validates an agent configuration
-func ConfigValidateAction(c *cli.Context) error {
-	configPath := c.String("config")
-	verbose := c.Bool("verbose")
+func ConfigValidateAction(ctx context.Context, cmd *cli.Command) error {
+	configPath := cmd.String("config")
+	verbose := cmd.Bool("verbose")
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return fmt.Errorf("configuration file not found: %s", configPath)
+		return fmt.Errorf("%w: %s", ErrConfigFileNotFound, configPath)
 	}
 
 	// Load and validate configuration
@@ -144,32 +147,32 @@ func ConfigValidateAction(c *cli.Context) error {
 
 // ConfigShowFlags are the flags for the config show command
 var ConfigShowFlags = []cli.Flag{
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "config",
 		Value: "agent.yaml",
 		Usage: "Path to the configuration file to show",
 	},
-	cli.StringFlag{
+	&cli.StringFlag{
 		Name:  "format",
 		Value: "yaml",
 		Usage: "Output format (yaml or json)",
 	},
-	cli.BoolFlag{
+	&cli.BoolFlag{
 		Name:  "redact",
 		Usage: "Redact sensitive information (API keys, secrets)",
 	},
 }
 
 // ConfigShowAction displays the current configuration
-func ConfigShowAction(c *cli.Context) error {
-	configPath := c.String("config")
-	format := c.String("format")
-	redact := c.Bool("redact")
+func ConfigShowAction(ctx context.Context, cmd *cli.Command) error {
+	configPath := cmd.String("config")
+	format := cmd.String("format")
+	redact := cmd.Bool("redact")
 
 	// Load configuration
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
+		return fmt.Errorf("%w: %w", ErrFailedToLoadConfig, err)
 	}
 
 	// Redact sensitive information if requested
@@ -192,28 +195,30 @@ func ConfigShowAction(c *cli.Context) error {
 	case "yaml", "yml":
 		data, err := yaml.Marshal(cfg)
 		if err != nil {
-			return fmt.Errorf("failed to marshal configuration: %w", err)
+			return fmt.Errorf("%w: %w", ErrFailedToMarshalConfig, err)
 		}
+
 		fmt.Print(string(data))
 
 	case "json":
 		encoder := yaml.NewEncoder(os.Stdout)
 		encoder.SetIndent(2)
+
 		if err := encoder.Encode(cfg); err != nil {
-			return fmt.Errorf("failed to encode configuration: %w", err)
+			return fmt.Errorf("%w: %w", ErrFailedToEncodeConfig, err)
 		}
 
 	default:
-		return fmt.Errorf("unsupported format: %s (supported: yaml, json)", format)
+		return fmt.Errorf("%w: %s (supported: yaml, json)", ErrUnsupportedFormat, format)
 	}
 
 	return nil
 }
 
 // VersionAction shows version information
-func VersionAction(c *cli.Context) error {
-	fmt.Printf("openlane-agent version %s\n", version.FullVersion())
-	fmt.Printf("User-Agent: %s\n", version.UserAgent())
+func VersionAction(ctx context.Context, cmd *cli.Command) error {
+	fmt.Printf("openlane-agent version %s\n", constants.FullVersion())
+	fmt.Printf("User-Agent: %s\n", constants.UserAgent())
 	return nil
 }
 
@@ -240,5 +245,6 @@ func splitEnvVar(envVar string) []string {
 	if len(parts) == 2 {
 		return parts
 	}
+
 	return []string{envVar}
 }

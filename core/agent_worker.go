@@ -7,9 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/theopenlane/agent/api"
-	"github.com/theopenlane/agent/internal/config"
+	"github.com/theopenlane/agent/config"
+	"github.com/theopenlane/agent/internal/retry"
 	"github.com/theopenlane/agent/internal/scheduler"
 	"github.com/theopenlane/agent/internal/storage"
 	"github.com/theopenlane/core/pkg/models"
@@ -25,7 +26,7 @@ type AgentWorkerConfig struct {
 	SpawnIndex int
 
 	// The agent configuration from CLI
-	AgentConfiguration config.Config
+	AgentConfiguration *config.Config
 
 	// Maximum number of concurrent checks
 	MaxConcurrency int
@@ -69,11 +70,8 @@ type AgentWorker struct {
 	// The GraphQL client for communicating with Openlane
 	apiClient *api.GraphQLClient
 
-	// The logger instance to use
-	logger zerolog.Logger
-
 	// The agent configuration
-	agentConfiguration config.Config
+	agentConfiguration *config.Config
 
 	// The registered agent information
 	agentInfo *openlaneclient.JobRunner
@@ -102,36 +100,57 @@ type AgentWorker struct {
 	// Local check scheduler
 	scheduler *scheduler.Scheduler
 
-	// Storage management
-	storageManager *storage.StorageManager
+	// Retry manager for resilient operations
+	retryManager *retry.Manager
+
+	// Unified storage system for handling check results and evidence
+	storage         storage.Storage
+	evidenceService *storage.EvidenceService
 
 	// The time when this agent worker started
 	startTime time.Time
 }
 
 // NewAgentWorker creates a new agent worker
-func NewAgentWorker(l zerolog.Logger, agentInfo *openlaneclient.JobRunner, apiClient *api.GraphQLClient, config AgentWorkerConfig) *AgentWorker {
+func NewAgentWorker(agentInfo *openlaneclient.JobRunner, apiClient *api.GraphQLClient, config AgentWorkerConfig) *AgentWorker {
 	// Create scheduler for local checks
-	sched := scheduler.NewScheduler(l)
+	sched := scheduler.NewScheduler()
 
 	// Add local checks to scheduler
 	for i := range config.AgentConfiguration.Checks {
 		check := &config.AgentConfiguration.Checks[i]
 		if err := sched.AddCheck(check); err != nil {
-			l.Error().Err(err).Str("check_name", check.Name).Msg("Failed to schedule check")
+			log.Error().Err(err).Str("check_name", check.Name).Msg("Failed to schedule check")
 		}
 	}
 
-	// Initialize storage manager based on operation mode
-	storageManager, err := storage.NewStorageManager(config.AgentConfiguration)
+	// Initialize unified storage system based on operation mode
+	storageSystem, err := storage.NewStorageFromConfig(config.AgentConfiguration)
 	if err != nil {
-		l.Error().Err(err).Msg("Failed to create storage manager, agent will not function properly")
+		log.Error().Err(err).Msg("Failed to create storage system, agent will not function properly")
 		// We should still return the worker, but it won't be able to store results
-		storageManager = nil
+		storageSystem = nil
 	}
 
+	// Initialize evidence service
+	var evidenceService *storage.EvidenceService
+
+	if storageSystem != nil {
+		storageConfig := storage.ConfigFromAgentConfig(config.AgentConfiguration)
+		evidenceService = storage.NewEvidenceService(storageConfig)
+	}
+
+	// Initialize retry manager with configured settings
+	retryConfig := retry.Config{
+		MaxAttempts:  config.AgentConfiguration.Retry.MaxAttempts,
+		InitialDelay: config.AgentConfiguration.Retry.InitialDelay,
+		MaxDelay:     config.AgentConfiguration.Retry.MaxDelay,
+		Strategy:     config.AgentConfiguration.Retry.Strategy,
+		Multiplier:   config.AgentConfiguration.Retry.Multiplier,
+	}
+	retryManager := retry.NewManager(retryConfig)
+
 	worker := &AgentWorker{
-		logger:             l,
 		agentInfo:          agentInfo,
 		apiClient:          apiClient,
 		agentConfiguration: config.AgentConfiguration,
@@ -144,24 +163,27 @@ func NewAgentWorker(l zerolog.Logger, agentInfo *openlaneclient.JobRunner, apiCl
 		pollInterval:       config.PollInterval,
 		heartbeatInterval:  config.HeartbeatInterval,
 		scheduler:          sched,
-		storageManager:     storageManager,
+		storage:            storageSystem,
+		evidenceService:    evidenceService,
+		retryManager:       retryManager,
 		startTime:          time.Now(),
 	}
 
-	l.Info().Str("mode", string(config.AgentConfiguration.Offline.Mode)).Msg("Storage manager initialized")
+	log.Info().Str("mode", string(config.AgentConfiguration.Offline.Mode)).Msg("Storage manager initialized")
 
 	return worker
 }
 
 // Start begins the agent worker's main loop
 func (w *AgentWorker) Start(ctx context.Context) error {
-	w.logger.Info().Int("worker", w.spawnIndex).Msg("Starting worker")
+	log.Info().Int("worker", w.spawnIndex).Msg("Starting worker")
 
-	// Initialize storage-specific components
-	if bufferedStorage, ok := w.storageManager.ResultStorage.(*storage.BufferedAPIStorage); ok {
-		w.logger.Info().Msg("Starting buffered API storage")
-		if err := bufferedStorage.Start(ctx); err != nil {
-			w.logger.Error().Err(err).Msg("Failed to start buffered storage")
+	// Storage system is already initialized and ready to use
+	if w.storage != nil {
+		log.Info().Msg("Storage system ready")
+
+		if err := w.storage.Health(); err != nil {
+			log.Warn().Err(err).Msg("Storage health check failed")
 		}
 	}
 
@@ -178,14 +200,13 @@ func (w *AgentWorker) Start(ctx context.Context) error {
 // Stop gracefully stops the agent worker
 func (w *AgentWorker) Stop() {
 	w.stopOnce.Do(func() {
-		w.logger.Info().Int("worker", w.spawnIndex).Msg("Stopping worker")
-		
-		// Stop storage manager components
-		if bufferedStorage, ok := w.storageManager.ResultStorage.(*storage.BufferedAPIStorage); ok {
-			bufferedStorage.Stop()
+		log.Info().Int("worker", w.spawnIndex).Msg("Stopping worker")
+
+		// Close storage system
+		if w.storage != nil {
+			w.storage.Close()
 		}
-		w.storageManager.Close()
-		
+
 		close(w.stop)
 	})
 }
@@ -203,7 +224,7 @@ func (w *AgentWorker) pollLoop(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := w.pollForWork(ctx); err != nil {
-				w.logger.Error().Err(err).Msg("Error polling for work")
+				log.Error().Err(err).Msg("Error polling for work")
 				// Continue polling even if there's an error
 			}
 		}
@@ -219,27 +240,34 @@ func (w *AgentWorker) pollForWork(ctx context.Context) error {
 
 	// Check if we have capacity for more work
 	if w.getCurrentConcurrency() >= w.maxConcurrency {
-		w.logger.Debug().Msg("At max concurrency, skipping remote poll")
+		log.Debug().Msg("At max concurrency, skipping remote poll")
 		return nil
 	}
 
-	// Poll for REMOTE scheduled jobs from platform
-	scheduledJobs, err := w.apiClient.PollForWork(ctx)
+	// Poll for REMOTE scheduled jobs from platform with retry
+	var scheduledJobs []*openlaneclient.ScheduledJob
+
+	err := w.retryManager.ExecuteWithContext(ctx, func(ctx context.Context) error {
+		var pollErr error
+		scheduledJobs, pollErr = w.apiClient.PollForWork(ctx)
+
+		return pollErr
+	})
 	if err != nil {
-		return fmt.Errorf("failed to poll for remote work: %w", err)
+		return fmt.Errorf("failed to poll for remote work after retries: %w", err)
 	}
 
 	if len(scheduledJobs) == 0 {
-		w.logger.Debug().Msg("No remote scheduled jobs available")
+		log.Debug().Msg("No remote scheduled jobs available")
 		return nil
 	}
 
-	w.logger.Info().Int("count", len(scheduledJobs)).Msg("Received remote jobs")
+	log.Info().Int("count", len(scheduledJobs)).Msg("Received remote jobs")
 
 	// Execute scheduled jobs concurrently up to our limit
 	for _, scheduledJob := range scheduledJobs {
 		if w.getCurrentConcurrency() >= w.maxConcurrency {
-			w.logger.Debug().Msg("Max concurrency reached")
+			log.Debug().Msg("Max concurrency reached")
 			break
 		}
 
@@ -253,7 +281,7 @@ func (w *AgentWorker) pollForWork(ctx context.Context) error {
 // schedulerRoutine handles LOCAL check scheduling based on cron expressions
 func (w *AgentWorker) schedulerRoutine(ctx context.Context) {
 	// Check for due local checks every 30 seconds
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(30 * time.Second) // nolint:mnd
 	defer ticker.Stop()
 
 	for {
@@ -264,7 +292,7 @@ func (w *AgentWorker) schedulerRoutine(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := w.executeScheduledChecks(ctx); err != nil {
-				w.logger.Error().Err(err).Msg("Error executing scheduled checks")
+				log.Error().Err(err).Msg("Error executing scheduled checks")
 			}
 		}
 	}
@@ -274,7 +302,7 @@ func (w *AgentWorker) schedulerRoutine(ctx context.Context) {
 func (w *AgentWorker) executeScheduledChecks(ctx context.Context) error {
 	// Check if we have capacity for more work
 	if w.getCurrentConcurrency() >= w.maxConcurrency {
-		w.logger.Debug().Msg("At max concurrency, skipping local checks")
+		log.Debug().Msg("At max concurrency, skipping local checks")
 		return nil
 	}
 
@@ -284,12 +312,12 @@ func (w *AgentWorker) executeScheduledChecks(ctx context.Context) error {
 		return nil
 	}
 
-	w.logger.Info().Int("count", len(dueChecks)).Msg("Found local checks due")
+	log.Info().Int("count", len(dueChecks)).Msg("Found local checks due")
 
 	// Execute due checks
 	for _, check := range dueChecks {
 		if w.getCurrentConcurrency() >= w.maxConcurrency {
-			w.logger.Debug().Msg("Max concurrency reached, deferring checks")
+			log.Debug().Msg("Max concurrency reached, deferring checks")
 			break
 		}
 
@@ -307,13 +335,14 @@ func (w *AgentWorker) executeScheduledChecks(ctx context.Context) error {
 func (w *AgentWorker) executeScheduledJob(ctx context.Context, scheduledJob *openlaneclient.ScheduledJob) {
 	checkID := fmt.Sprintf("remote-%s-%d", scheduledJob.ID, time.Now().UnixNano())
 
-	w.logger.Info().Str("job_id", scheduledJob.ID).Msg("Starting remote job")
+	log.Info().Str("job_id", scheduledJob.ID).Msg("Starting remote job")
 
 	// Create a check controller
-	controller := NewComplianceCheckController(w.logger, w.apiClient, w.agentInfo.ID, nil)
+	controller := NewComplianceCheckController(w.apiClient, w.agentInfo.ID, w.storage, w.evidenceService)
 
 	// Add to active checks
 	w.stateMtx.Lock()
+
 	w.activeChecks[checkID] = controller
 	if len(w.activeChecks) == 1 {
 		w.state = agentWorkerStateBusy
@@ -349,6 +378,7 @@ func (w *AgentWorker) executeScheduledJob(ctx context.Context, scheduledJob *ope
 	// Remove from active checks
 	w.stateMtx.Lock()
 	delete(w.activeChecks, checkID)
+
 	if len(w.activeChecks) == 0 {
 		w.state = agentWorkerStateIdle
 		w.currentCheckID = ""
@@ -357,25 +387,27 @@ func (w *AgentWorker) executeScheduledJob(ctx context.Context, scheduledJob *ope
 
 	// Update stats
 	w.stats.Lock()
+
 	w.stats.totalChecks++
 	if err != nil {
 		w.stats.failedChecks++
 		// Log at appropriate level based on continue_on_error setting
 		if remoteCheck.ContinueOnError {
-			w.logger.Warn().Err(err).Str("job_id", scheduledJob.ID).Msg("Remote job failed (continuing)")
+			log.Warn().Err(err).Str("job_id", scheduledJob.ID).Msg("Remote job failed (continuing)")
 		} else {
-			w.logger.Error().Err(err).Str("job_id", scheduledJob.ID).Msg("Remote job failed")
+			log.Error().Err(err).Str("job_id", scheduledJob.ID).Msg("Remote job failed")
 		}
 	} else {
 		w.stats.successfulChecks++
-		w.logger.Info().Str("job_id", scheduledJob.ID).Msg("Remote job completed")
+
+		log.Info().Str("job_id", scheduledJob.ID).Msg("Remote job completed")
 	}
 	w.stats.Unlock()
 
 	// Report results if we have them
 	if result != nil {
-		if err := w.reportResult(ctx, result); err != nil {
-			w.logger.Error().Err(err).Str("job_id", scheduledJob.ID).Msg("Failed to report results")
+		if err := w.reportResult(result); err != nil {
+			log.Error().Err(err).Str("job_id", scheduledJob.ID).Msg("Failed to report results")
 		}
 	}
 }
@@ -384,13 +416,14 @@ func (w *AgentWorker) executeScheduledJob(ctx context.Context, scheduledJob *ope
 func (w *AgentWorker) executeLocalCheck(ctx context.Context, check *config.Check) {
 	checkID := fmt.Sprintf("local-%s-%d", check.Name, time.Now().UnixNano())
 
-	w.logger.Info().Str("check", check.Name).Msg("Starting local check")
+	log.Info().Str("check", check.Name).Msg("Starting local check")
 
 	// Create a check controller
-	controller := NewComplianceCheckController(w.logger, w.apiClient, w.agentInfo.ID, nil)
+	controller := NewComplianceCheckController(w.apiClient, w.agentInfo.ID, w.storage, w.evidenceService)
 
 	// Add to active checks
 	w.stateMtx.Lock()
+
 	w.activeChecks[checkID] = controller
 	if len(w.activeChecks) == 1 {
 		w.state = agentWorkerStateBusy
@@ -400,11 +433,11 @@ func (w *AgentWorker) executeLocalCheck(ctx context.Context, check *config.Check
 
 	// Convert local check to RemoteCheck format for execution
 	remoteCheck := &api.RemoteCheck{
-		Name:        check.Name,
-		Description: check.Description,
-		Command:     check.Command,
-		Args:        check.Args,
-		WorkDir:     check.WorkDir,
+		Name:            check.Name,
+		Description:     check.Description,
+		Command:         check.Command,
+		Args:            check.Args,
+		WorkDir:         check.WorkDir,
 		Timeout:         check.Timeout.String(),
 		Controls:        check.Controls,
 		Tags:            check.Tags,
@@ -420,12 +453,13 @@ func (w *AgentWorker) executeLocalCheck(ctx context.Context, check *config.Check
 
 	// Mark as completed in scheduler
 	if schedErr := w.scheduler.MarkCompleted(check.Name); schedErr != nil {
-		w.logger.Error().Err(schedErr).Str("check", check.Name).Msg("Failed to mark check completed")
+		log.Error().Err(schedErr).Str("check", check.Name).Msg("Failed to mark check completed")
 	}
 
 	// Remove from active checks
 	w.stateMtx.Lock()
 	delete(w.activeChecks, checkID)
+
 	if len(w.activeChecks) == 0 {
 		w.state = agentWorkerStateIdle
 		w.currentCheckID = ""
@@ -434,32 +468,39 @@ func (w *AgentWorker) executeLocalCheck(ctx context.Context, check *config.Check
 
 	// Update stats
 	w.stats.Lock()
+
 	w.stats.totalChecks++
 	if err != nil {
 		w.stats.failedChecks++
 		// Log at appropriate level based on continue_on_error setting
 		if remoteCheck.ContinueOnError {
-			w.logger.Warn().Err(err).Str("check", check.Name).Msg("Local check failed (continuing)")
+			log.Warn().Err(err).Str("check", check.Name).Msg("Local check failed (continuing)")
 		} else {
-			w.logger.Error().Err(err).Str("check", check.Name).Msg("Local check failed")
+			log.Error().Err(err).Str("check", check.Name).Msg("Local check failed")
 		}
 	} else {
 		w.stats.successfulChecks++
-		w.logger.Info().Str("check", check.Name).Msg("Local check completed")
+
+		log.Info().Str("check", check.Name).Msg("Local check completed")
 	}
 	w.stats.Unlock()
 
 	// Report results if we have them
 	if result != nil {
-		if err := w.reportResult(ctx, result); err != nil {
-			w.logger.Error().Err(err).Str("check", check.Name).Msg("Failed to report results")
+		if err := w.reportResult(result); err != nil {
+			log.Error().Err(err).Str("check", check.Name).Msg("Failed to report results")
 		}
 	}
 }
 
 // reportResult reports the compliance check result using the configured storage
-func (w *AgentWorker) reportResult(ctx context.Context, result *config.Result) error {
-	return w.storageManager.StoreResult(ctx, result)
+func (w *AgentWorker) reportResult(result *config.Result) error {
+	if w.storage == nil {
+		log.Error().Msg("No storage system available, cannot store result")
+		return ErrNoStorageSystemAvailable
+	}
+
+	return w.storage.StoreResult(result)
 }
 
 // heartbeatRoutine sends periodic heartbeats to the platform
@@ -474,17 +515,21 @@ func (w *AgentWorker) heartbeatRoutine(ctx context.Context) {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			if err := w.sendHeartbeat(ctx); err != nil {
+			// Use retry manager for heartbeat with network retry conditions
+			conditionalRetry := retry.NewConditionalManager(w.retryManager, retry.RetryOnNetworkError)
+			if err := conditionalRetry.ExecuteWithContext(ctx, func(ctx context.Context) error {
+				return w.sendHeartbeat(ctx)
+			}); err != nil {
 				w.stats.Lock()
 				w.stats.lastHeartbeatError = err
 				w.stats.Unlock()
-				w.logger.Error().Err(err).Msg("Heartbeat failed")
+				log.Error().Err(err).Msg("Heartbeat failed after retries")
 			} else {
 				w.stats.Lock()
 				w.stats.lastHeartbeat = time.Now()
 				w.stats.lastHeartbeatError = nil
 				w.stats.Unlock()
-				w.logger.Debug().Msg("Heartbeat sent successfully")
+				log.Debug().Msg("Heartbeat sent successfully")
 			}
 		}
 	}
@@ -492,7 +537,7 @@ func (w *AgentWorker) heartbeatRoutine(ctx context.Context) {
 
 // sendHeartbeat sends a heartbeat to the platform
 func (w *AgentWorker) sendHeartbeat(ctx context.Context) error {
-	w.logger.Debug().Msg("Sending heartbeat")
+	log.Debug().Msg("Sending heartbeat")
 
 	// Create a heartbeat by updating the JobRunner with current status
 	// This serves as a "ping" to show the agent is alive and provides current state
@@ -513,6 +558,7 @@ func (w *AgentWorker) sendHeartbeat(ctx context.Context) error {
 func (w *AgentWorker) getCurrentConcurrency() int {
 	w.stateMtx.Lock()
 	defer w.stateMtx.Unlock()
+
 	return len(w.activeChecks)
 }
 
@@ -520,14 +566,8 @@ func (w *AgentWorker) getCurrentConcurrency() int {
 func (w *AgentWorker) getState() agentWorkerState {
 	w.stateMtx.Lock()
 	defer w.stateMtx.Unlock()
-	return w.state
-}
 
-// getCurrentCheckID returns the ID of the currently running check (if any)
-func (w *AgentWorker) getCurrentCheckID() string {
-	w.stateMtx.Lock()
-	defer w.stateMtx.Unlock()
-	return w.currentCheckID
+	return w.state
 }
 
 // GetStats returns current worker statistics
@@ -551,8 +591,8 @@ func (w *AgentWorker) GetStats() map[string]any {
 	}
 
 	// Add storage information
-	if w.storageManager != nil {
-		stats["storage"] = w.storageManager.GetStorageStatus()
+	if w.storage != nil {
+		stats["storage"] = w.storage.GetStats()
 	}
 
 	return stats
@@ -565,6 +605,7 @@ func getStringValue(s *string) string {
 	if s == nil {
 		return ""
 	}
+
 	return *s
 }
 
@@ -574,18 +615,8 @@ func convertConfigToSettings(config map[string]any) map[string]string {
 	for key, value := range config {
 		settings[key] = fmt.Sprintf("%v", value)
 	}
-	return settings
-}
 
-// extractControlReferences extracts control reference codes from Control structs
-func extractControlReferences(controls []*openlaneclient.Control) []string {
-	var refs []string
-	for _, control := range controls {
-		if control.ReferenceID != nil {
-			refs = append(refs, *control.ReferenceID)
-		}
-	}
-	return refs
+	return settings
 }
 
 // convertJobConfigurationToSettings converts models.JobConfiguration to map[string]string

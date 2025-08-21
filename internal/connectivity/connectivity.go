@@ -7,40 +7,41 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 // Status represents the connectivity status
 type Status int
 
 const (
+	// StatusUnknown represents unknown connectivity status
 	StatusUnknown Status = iota
+	// StatusOnline represents online connectivity status
 	StatusOnline
+	// StatusOffline represents offline connectivity status
 	StatusOffline
 )
 
 // Manager manages connectivity checking and status
 type Manager struct {
-	logger       zerolog.Logger
 	apiURL       string
 	checkTimeout time.Duration
-	
+
 	mu            sync.RWMutex
 	status        Status
 	lastCheck     time.Time
 	lastError     error
 	lastOnlineAt  time.Time
 	lastOfflineAt time.Time
-	
+
 	listeners []chan Status
 }
 
 // NewManager creates a new connectivity manager
-func NewManager(logger zerolog.Logger, apiURL string) *Manager {
+func NewManager(apiURL string) *Manager {
 	return &Manager{
-		logger:       logger,
 		apiURL:       apiURL,
-		checkTimeout: 10 * time.Second,
+		checkTimeout: 10 * time.Second, // nolint:mnd
 		status:       StatusUnknown,
 	}
 }
@@ -68,13 +69,14 @@ func (m *Manager) Check(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	// Consider any successful response as online
-	if resp.StatusCode < 500 {
+	if resp.StatusCode < 500 { // nolint:mnd
 		m.setStatus(StatusOnline, nil)
 		return nil
 	}
 
-	err = fmt.Errorf("API returned status %d", resp.StatusCode)
+	err = fmt.Errorf("%w: %d", ErrAPIUnsuccessfulStatusCode, resp.StatusCode)
 	m.setStatus(StatusOffline, err)
+
 	return err
 }
 
@@ -82,6 +84,7 @@ func (m *Manager) Check(ctx context.Context) error {
 func (m *Manager) GetStatus() Status {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
 	return m.status
 }
 
@@ -99,13 +102,13 @@ func (m *Manager) IsOffline() bool {
 func (m *Manager) Subscribe() <-chan Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	ch := make(chan Status, 1)
 	m.listeners = append(m.listeners, ch)
-	
+
 	// Send current status immediately
 	ch <- m.status
-	
+
 	return ch
 }
 
@@ -116,7 +119,7 @@ func (m *Manager) StartMonitoring(ctx context.Context, interval time.Duration) {
 
 	// Initial check
 	if err := m.Check(ctx); err != nil {
-		m.logger.Warn().Err(err).Msg("Initial connectivity check failed")
+		log.Warn().Err(err).Msg("Initial connectivity check failed")
 	}
 
 	for {
@@ -125,18 +128,18 @@ func (m *Manager) StartMonitoring(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			if err := m.Check(ctx); err != nil {
-				m.logger.Debug().Err(err).Msg("Connectivity check failed")
+				log.Debug().Err(err).Msg("Connectivity check failed")
 			}
 		}
 	}
 }
 
 // GetStats returns connectivity statistics
-func (m *Manager) GetStats() map[string]interface{} {
+func (m *Manager) GetStats() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	stats := map[string]interface{}{
+	stats := map[string]any{
 		"status":     m.statusString(),
 		"last_check": m.lastCheck,
 	}
@@ -169,13 +172,15 @@ func (m *Manager) setStatus(status Status, err error) {
 	switch status {
 	case StatusOnline:
 		m.lastOnlineAt = time.Now()
+
 		if oldStatus != StatusOnline {
-			m.logger.Info().Msg("Connectivity restored")
+			log.Info().Msg("Connectivity restored")
 		}
 	case StatusOffline:
 		m.lastOfflineAt = time.Now()
+
 		if oldStatus != StatusOffline {
-			m.logger.Warn().Err(err).Msg("Connectivity lost")
+			log.Warn().Err(err).Msg("Connectivity lost")
 		}
 	}
 
@@ -210,6 +215,7 @@ func (m *Manager) WaitForOnline(ctx context.Context) error {
 	}
 
 	ch := m.Subscribe()
+
 	for {
 		select {
 		case <-ctx.Done():

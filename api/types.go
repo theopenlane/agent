@@ -3,11 +3,11 @@ package api
 import (
 	"time"
 
-	"github.com/theopenlane/agent/internal/config"
+	"github.com/theopenlane/agent/config"
 )
 
-// APIResponse represents the standard API response format
-type APIResponse struct {
+// Response represents the standard API response format
+type Response struct {
 	Success bool   `json:"success"`
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
@@ -25,6 +25,7 @@ type ReportResultsRequest struct {
 type JobRunnerRegistration struct {
 	Name         string            `json:"name"`
 	IPAddress    string            `json:"ipAddress"`
+	HardwareID   string            `json:"hardwareId,omitempty"`
 	Version      string            `json:"version,omitempty"`
 	Platform     string            `json:"platform,omitempty"`
 	Hostname     string            `json:"hostname,omitempty"`
@@ -203,7 +204,7 @@ type ErrorResponse struct {
 
 // PaginatedResponse represents a paginated API response
 type PaginatedResponse struct {
-	APIResponse
+	Response
 	Pagination PaginationInfo `json:"pagination"`
 }
 
