@@ -15,9 +15,13 @@ checks:
     description: "Verify that full disk encryption is enabled"
     schedule: "0 8 * * *"  # Daily at 8 AM
     enabled: true
-    controls:
-      - "NIST-800-53-SC-28"  # Protection of Information at Rest
-      - "CIS-3.7"           # Ensure drive encryption
+    complianceStandards:
+      - standard: nist80053v5
+        controls:
+          - SC-28  # Protection of Information at Rest
+      - standard: cis
+        controls:
+          - "3.7"  # Ensure drive encryption
     tags:
       - "encryption"
       - "data_protection"
@@ -75,9 +79,13 @@ checks:
     description: "Verify automatic login is disabled for security"
     schedule: "0 */6 * * *"  # Every 6 hours
     enabled: true
-    controls:
-      - "NIST-800-53-AC-2"   # Account Management
-      - "CIS-5.3"            # Disable Automatic Login
+    complianceStandards:
+      - standard: nist80053v5
+        controls:
+          - AC-2   # Account Management
+      - standard: cis
+        controls:
+          - "5.3"  # Disable Automatic Login
     tags:
       - "authentication"
       - "access_control"
@@ -127,9 +135,13 @@ checks:
     description: "Verify system security updates are installed"
     schedule: "0 6 * * *"  # Daily at 6 AM
     enabled: true
-    controls:
-      - "NIST-800-53-SI-2"   # Flaw Remediation
-      - "CIS-1.9"            # Ensure updates are installed
+    complianceStandards:
+      - standard: nist80053v5
+        controls:
+          - SI-2   # Flaw Remediation
+      - standard: cis
+        controls:
+          - "1.9"  # Ensure updates are installed
     tags:
       - "patches"
       - "vulnerability_management"
@@ -184,9 +196,13 @@ checks:
     description: "Verify host-based firewall is active"
     schedule: "0 */12 * * *"  # Twice daily
     enabled: true
-    controls:
-      - "NIST-800-53-SC-7"   # Boundary Protection
-      - "CIS-3.5"            # Configure firewall
+    complianceStandards:
+      - standard: nist80053v5
+        controls:
+          - SC-7   # Boundary Protection
+      - standard: cis
+        controls:
+          - "3.5"  # Configure firewall
     tags:
       - "firewall"
       - "network_security"
@@ -245,8 +261,10 @@ checks:
     args: ["-f"]
     schedule: "0 12 * * *"  # Daily at noon
     enabled: true
-    controls:
-      - "NIST-800-53-CM-6"   # Configuration Settings
+    complianceStandards:
+      - standard: nist80053v5
+        controls:
+          - CM-6   # Configuration Settings
     tags:
       - "configuration"
       - "identity"

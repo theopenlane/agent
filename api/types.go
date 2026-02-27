@@ -46,6 +46,8 @@ type JobRunnerToken struct {
 type AgentStatus struct {
 	Status          string         `json:"status"`
 	LastPing        time.Time      `json:"last_ping"`
+	Version         string         `json:"version"`
+	IPAddress       string         `json:"ip_address"`
 	ActiveChecks    int            `json:"active_checks"`
 	TotalExecutions int64          `json:"total_executions"`
 	SuccessfulRuns  int64          `json:"successful_runs"`
@@ -76,50 +78,6 @@ type CheckStatus struct {
 	LastDuration string    `json:"last_duration"`
 	LastExitCode int       `json:"last_exit_code"`
 	FindingCount int       `json:"finding_count"`
-}
-
-// RemoteCheck represents a compliance check that can be executed remotely
-type RemoteCheck struct {
-	// Basic info
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-
-	// Execution details
-	Command     string   `json:"command,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	WorkDir     string   `json:"work_dir,omitempty"`
-	DownloadURL string   `json:"download_url,omitempty"`
-	Platform    string   `json:"platform,omitempty"`
-
-	// Environment and configuration
-	Env      []string          `json:"env,omitempty"`
-	Settings map[string]string `json:"settings,omitempty"`
-
-	// Scheduling and execution
-	Schedule string `json:"schedule,omitempty"`
-	Timeout  string `json:"timeout,omitempty"`
-	Enabled  bool   `json:"enabled"`
-
-	// Compliance context
-	Controls []string `json:"controls,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
-
-	// Execution options
-	ContinueOnError bool `json:"continue_on_error,omitempty"`
-
-	// Reference to scheduled job if this comes from platform
-	ScheduledJobID string `json:"scheduled_job_id,omitempty"`
-}
-
-// RemoteConfig represents configuration that can be managed remotely
-type RemoteConfig struct {
-	Version      string            `json:"version"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	LogLevel     string            `json:"log_level,omitempty"`
-	PollInterval string            `json:"poll_interval,omitempty"`
-	Checks       []RemoteCheck     `json:"checks,omitempty"`
-	Environment  map[string]string `json:"environment,omitempty"`
-	Features     map[string]bool   `json:"features,omitempty"`
 }
 
 // ComplianceReport represents a summary report of compliance status
@@ -161,29 +119,6 @@ type CheckSummary struct {
 	LowCount         int       `json:"low_count"`
 	Duration         string    `json:"duration"`
 	ResourcesChecked int       `json:"resources_checked"`
-}
-
-// WebhookPayload represents a webhook notification payload
-type WebhookPayload struct {
-	Event     string    `json:"event"`
-	Timestamp time.Time `json:"timestamp"`
-	AgentID   string    `json:"agent_id"`
-	Data      any       `json:"data"`
-}
-
-// FindingWebhookData represents webhook data for finding events
-type FindingWebhookData struct {
-	CheckName string         `json:"check_name"`
-	Finding   config.Finding `json:"finding"`
-	NewStatus string         `json:"new_status,omitempty"`
-	OldStatus string         `json:"old_status,omitempty"`
-}
-
-// AgentWebhookData represents webhook data for agent events
-type AgentWebhookData struct {
-	AgentName string `json:"agent_name"`
-	Status    string `json:"status"`
-	Message   string `json:"message,omitempty"`
 }
 
 // HealthCheckResponse represents the response from a health check

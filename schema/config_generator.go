@@ -1,4 +1,4 @@
-package main
+package schema
 
 import (
 	"encoding/json"
@@ -6,15 +6,11 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/invopop/jsonschema"
 	"github.com/invopop/yaml"
-	"github.com/mcuadros/go-defaults"
 
 	"github.com/theopenlane/utils/envparse"
-
-	"github.com/theopenlane/agent/config"
 )
 
 // Configuration paths and constants
@@ -22,14 +18,15 @@ const (
 	tagName        = "koanf"
 	skipper        = "-"
 	defaultTag     = "default"
-	jsonSchemaPath = "./jsonschema/agent.config.json"
+	jsonSchemaPath = "./schema/agent.config.json"
 	yamlConfigPath = "./config/config.example.yaml"
 	envConfigPath  = "./config/.env.example"
-	configMapPath  = "./config/configmap.yaml"
 	sensitiveTag   = "sensitive"
 	varPrefix      = "OPENLANE_AGENT"
 	ownerReadWrite = 0o600
-	dirPermission  = 0o755
+
+	// File size constants
+	maxFileSizeBytes = 104857600 // 100MB
 )
 
 // includedPackages for Go comment extraction
@@ -58,20 +55,19 @@ type SensitiveField struct {
 	SecretName string
 }
 
-func main() {
+// GenerateConfigSchemas generates all configuration schema files
+func GenerateConfigSchemas(configStruct any) error {
 	c := schemaConfig{
 		jsonSchemaPath: jsonSchemaPath,
 		yamlConfigPath: yamlConfigPath,
 		envConfigPath:  envConfigPath,
 	}
 
-	if err := generateSchema(c, &config.Config{}); err != nil {
-		panic(err)
-	}
+	return generateSchema(c, configStruct)
 }
 
 // generateSchema generates all configuration files from the provided structure
-func generateSchema(c schemaConfig, structure interface{}) error {
+func generateSchema(c schemaConfig, structure any) error {
 	if err := generateJSONSchema(c.jsonSchemaPath, structure); err != nil {
 		return err
 	}
@@ -80,7 +76,7 @@ func generateSchema(c schemaConfig, structure interface{}) error {
 		return err
 	}
 
-	envFields, _, err := processEnvironmentVariables()
+	envFields, _, err := processEnvironmentVariables(structure)
 	if err != nil {
 		return err
 	}
@@ -93,7 +89,7 @@ func generateSchema(c schemaConfig, structure interface{}) error {
 }
 
 // generateJSONSchema creates the JSON schema file from the config structure
-func generateJSONSchema(jsonSchemaPath string, structure interface{}) error {
+func generateJSONSchema(jsonSchemaPath string, structure any) error {
 	r := jsonschema.Reflector{Namer: namePkg}
 	r.ExpandedStruct = true
 	r.RequiredFromJSONSchemaTags = true
@@ -128,69 +124,82 @@ func generateJSONSchema(jsonSchemaPath string, structure interface{}) error {
 
 // generateYAMLConfig creates the YAML configuration file with defaults
 func generateYAMLConfig(yamlConfigPath string) error {
-	yamlConfig := &config.Config{}
-	defaults.SetDefaults(yamlConfig)
+	// Create a generic config structure - this will need to be updated
+	// to work without the config import
+	yamlConfig := make(map[string]any)
 
-	// Set example values that are more meaningful than defaults
-	yamlConfig.RegistrationToken = "${OPENLANE_AGENT_REGISTRATIONTOKEN}"
-	yamlConfig.APIURL = "https://api.theopenlane.io"
-	yamlConfig.AgentName = "production-compliance-agent"
-	yamlConfig.LogLevel = "info"
-	yamlConfig.DataDir = "./data"
-	yamlConfig.PollInterval = time.Minute
-	yamlConfig.MaxConcurrency = 3
-	yamlConfig.DefaultTimeout = 5 * time.Minute
+	// Set example values manually since we can't import config
+	yamlConfig["registration_token"] = "${OPENLANE_AGENT_REGISTRATIONTOKEN}"
+	yamlConfig["api_url"] = "https://api.theopenlane.io"
+	yamlConfig["agent_name"] = "production-compliance-agent"
+	yamlConfig["log_level"] = "info"
+	yamlConfig["data_dir"] = "./data"
+	yamlConfig["poll_interval"] = "1m"
+	yamlConfig["max_concurrency"] = 3
+	yamlConfig["default_timeout"] = "5m"
 
 	// Configure evidence collection
-	yamlConfig.Evidence.Enabled = true
-	yamlConfig.Evidence.RetentionPeriod = 30 * 24 * time.Hour // 30 days
-	yamlConfig.Evidence.MaxFileSize = 100 * 1024 * 1024       // 100MB
-	yamlConfig.Evidence.CompressFiles = false
+	evidence := map[string]any{
+		"enabled":          true,
+		"retention_period": "720h",           // 30 days
+		"max_file_size":    maxFileSizeBytes, // 100MB
+		"compress_files":   false,
+	}
+	yamlConfig["evidence"] = evidence
 
 	// Configure operation mode
-	yamlConfig.Offline.Mode = config.ModeNormal
-	yamlConfig.Offline.OutputDir = "./results"
-	yamlConfig.Offline.OutputFormat = "json"
+	offline := map[string]any{
+		"mode":          "normal",
+		"output_dir":    "./results",
+		"output_format": "json",
+	}
+	yamlConfig["offline"] = offline
 
 	// Add example checks
-	yamlConfig.Checks = []config.Check{
+	checks := []map[string]any{
 		{
-			Name:        "disk-encryption-check",
-			Description: "Verify that full disk encryption is enabled on the system",
-			Command:     "./scripts/check-disk-encryption.sh",
-			Schedule:    "0 6 * * *", // Daily at 6 AM
-			Timeout:     5 * time.Minute,
-			Env: []string{
-				"ENCRYPTION_POLICY=required",
+			"name":        "disk-encryption-check",
+			"description": "Verify that full disk encryption is enabled on the system",
+			"command":     "./scripts/check-disk-encryption.sh",
+			"schedule":    "0 6 * * *", // Daily at 6 AM
+			"timeout":     "5m",
+			"env":         []string{"ENCRYPTION_POLICY=required"},
+			"compliance_standards": []map[string]any{
+				{
+					"standard": "soc2v2022",
+					"controls": []string{"CC6.7"},
+				},
+				{
+					"standard": "iso27001v2022",
+					"controls": []string{"A.10.1.1"},
+				},
+				{
+					"standard": "nist80053v5",
+					"controls": []string{"SC-28"},
+				},
 			},
-			Controls: []string{
-				"SOC2:CC6.7",
-				"ISO27001:A.10.1.1",
-				"NIST:SC-28",
+			"tags":           []string{"encryption", "storage", "host-security"},
+			"enabled":        true,
+			"evidence_paths": []string{"./evidence/disk-encryption-check/"},
+			"on_pass": map[string]any{
+				"upload_evidence":       true,
+				"update_control_status": true,
 			},
-			Tags:    []string{"encryption", "storage", "host-security"},
-			Enabled: true,
-			EvidencePaths: []string{
-				"./evidence/disk-encryption-check/",
-			},
-			OnPass: &config.ActionConfig{
-				UploadEvidence:      true,
-				UpdateControlStatus: true,
-			},
-			OnFail: &config.ActionConfig{
-				UploadEvidence:      true,
-				UpdateControlStatus: true,
-				Commands: []config.ActionCommand{
+			"on_fail": map[string]any{
+				"upload_evidence":       true,
+				"update_control_status": true,
+				"commands": []map[string]any{
 					{
-						Name:    "create-security-incident",
-						Command: "./scripts/create-incident.sh",
-						Args:    []string{"--type", "encryption", "--severity", "high"},
-						Timeout: time.Minute,
+						"name":    "create-security-incident",
+						"command": "./scripts/create-incident.sh",
+						"args":    []string{"--type", "encryption", "--severity", "high"},
+						"timeout": "1m",
 					},
 				},
 			},
 		},
 	}
+	yamlConfig["checks"] = checks
 
 	yamlSchema, err := yaml.Marshal(yamlConfig)
 	if err != nil {
@@ -207,13 +216,13 @@ func generateYAMLConfig(yamlConfigPath string) error {
 }
 
 // processEnvironmentVariables extracts and processes all environment variables from the config
-func processEnvironmentVariables() (string, []SensitiveField, error) {
+func processEnvironmentVariables(configStruct any) (string, []SensitiveField, error) {
 	cp := envparse.Config{
 		FieldTagName: tagName,
 		Skipper:      skipper,
 	}
 
-	out, err := cp.GatherEnvInfo(varPrefix, &config.Config{})
+	out, err := cp.GatherEnvInfo(varPrefix, configStruct)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to gather environment info: %w", err)
 	}

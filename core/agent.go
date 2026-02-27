@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -11,9 +12,15 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/theopenlane/agent/api"
 	"github.com/theopenlane/agent/config"
+	"github.com/theopenlane/agent/internal/connectivity"
 	"github.com/theopenlane/agent/internal/constants"
 	"github.com/theopenlane/agent/internal/identity"
-	"github.com/theopenlane/core/pkg/openlaneclient"
+	"github.com/theopenlane/go-client/graphclient"
+)
+
+const (
+	// Agent configuration constants
+	defaultHeartbeatIntervalSeconds = 60
 )
 
 // AgentOption is a functional option for Agent
@@ -30,7 +37,7 @@ type Agent struct {
 	hardwareDetector *identity.Detector
 
 	// Agent registration information
-	agentInfo *openlaneclient.JobRunner
+	agentInfo *graphclient.JobRunner
 
 	// Workers (can spawn multiple like Buildkite)
 	workers []*AgentWorker
@@ -42,7 +49,6 @@ type Agent struct {
 
 // NewAgent creates a new compliance agent with functional options
 func NewAgent(opts ...AgentOption) (*Agent, error) {
-
 	a := &Agent{
 		config: config.DefaultConfig(),
 		stop:   make(chan struct{}),
@@ -58,11 +64,14 @@ func NewAgent(opts ...AgentOption) (*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrFailedToCreateAPIClient, err)
 		}
+
 		apiClient = client
 	}
+
 	a.apiClient = apiClient
 	// Initialize hardware detector
 	a.hardwareDetector = identity.NewDetector()
+
 	return a, nil
 }
 
@@ -104,7 +113,7 @@ func (a *Agent) Register(ctx context.Context) error {
 	// Create registration request (following Buildkite's pattern)
 	regReq := api.JobRunnerRegistration{
 		Name:       a.config.AgentName,
-		IPAddress:  "192.168.1.100", // Use non-loopback IP for testing
+		IPAddress:  connectivity.GetPreferredIPAddress(ctx),
 		HardwareID: hardwareID,
 		Version:    constants.AgentVersion,
 		Platform:   runtime.GOOS,
@@ -133,9 +142,9 @@ func (a *Agent) Register(ctx context.Context) error {
 
 // Start starts the agent with the specified number of workers
 func (a *Agent) Start(ctx context.Context) error {
-	// In standalone mode, we don't need agent registration
+	// Agent may run without runner registration in local-schedule token mode.
 	if a.config.Offline.Mode != "standalone" && a.agentInfo == nil {
-		return ErrAgentNotRegistered
+		log.Info().Msg("No registered job runner; running local-schedule token mode")
 	}
 
 	// Determine number of workers to spawn
@@ -146,17 +155,28 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	log.Info().Int("workers", spawnCount).Msg("Starting workers")
 
+	assignedChecks := partitionEnabledChecks(a.config.Checks, spawnCount)
+	remotePollingEnabled := a.config.EnableRemotePoll && a.agentInfo != nil
+
+	if spawnCount > 1 && remotePollingEnabled {
+		log.Warn().Int("workers", spawnCount).Msg("Remote polling is restricted to worker 0 to avoid duplicate remote executions")
+	}
+
 	// Create and start workers (following Buildkite's spawn pattern)
 	var wg sync.WaitGroup
 
 	for i := 0; i < spawnCount; i++ {
 		workerConfig := AgentWorkerConfig{
-			Debug:              a.config.LogLevel == "debug",
-			SpawnIndex:         i,
-			AgentConfiguration: a.config, // Make sure AgentWorkerConfig expects *config.Config
-			MaxConcurrency:     a.config.MaxConcurrency,
-			PollInterval:       a.config.PollInterval,
-			HeartbeatInterval:  60 * time.Second, // Default heartbeat
+			Debug:               a.config.LogLevel == "debug",
+			SpawnIndex:          i,
+			AgentConfiguration:  a.config,
+			AssignedChecks:      assignedChecks[i],
+			HasAssignedChecks:   true,
+			EnableHeartbeat:     i == 0 && a.agentInfo != nil,
+			EnableRemotePolling: i == 0 && remotePollingEnabled,
+			MaxConcurrency:      a.config.MaxConcurrency,
+			PollInterval:        a.config.PollInterval,
+			HeartbeatInterval:   defaultHeartbeatIntervalSeconds * time.Second, // Default heartbeat
 		}
 
 		worker := NewAgentWorker(a.agentInfo, a.apiClient, workerConfig)
@@ -169,7 +189,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 			log.Info().Int("worker", index).Msg("Starting worker")
 
-			if err := w.Start(ctx); err != nil {
+			if err := w.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Error().Err(err).Int("worker", index).Msg("Worker failed")
 			}
 		}(worker, i)
@@ -177,6 +197,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	// Wait for all workers or stop signal
 	done := make(chan struct{})
+
 	go func() {
 		wg.Wait()
 		close(done)
@@ -197,6 +218,27 @@ func (a *Agent) Start(ctx context.Context) error {
 	}
 }
 
+func partitionEnabledChecks(checks []config.Check, workers int) [][]*config.Check {
+	partitions := make([][]*config.Check, workers)
+	if workers <= 0 {
+		return partitions
+	}
+
+	enabledChecks := make([]*config.Check, 0, len(checks))
+	for i := range checks {
+		if checks[i].Enabled {
+			enabledChecks = append(enabledChecks, &checks[i])
+		}
+	}
+
+	for idx, check := range enabledChecks {
+		workerIndex := idx % workers
+		partitions[workerIndex] = append(partitions[workerIndex], check)
+	}
+
+	return partitions
+}
+
 // Stop gracefully stops the agent and all workers
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
@@ -214,8 +256,13 @@ func (a *Agent) Stop() {
 
 // GetStats returns statistics for the agent and all workers
 func (a *Agent) GetStats() map[string]any {
+	agentID := ""
+	if a.agentInfo != nil {
+		agentID = a.agentInfo.ID
+	}
+
 	stats := map[string]any{
-		"agent_id":     a.agentInfo.ID,
+		"agent_id":     agentID,
 		"agent_name":   a.config.AgentName,
 		"worker_count": len(a.workers),
 		"workers":      make([]map[string]any, 0, len(a.workers)),

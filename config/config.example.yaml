@@ -2,11 +2,17 @@ agentName: production-compliance-agent
 apiUrl: https://api.theopenlane.io
 checks:
     - command: ./scripts/check-disk-encryption.sh
+      complianceStandards:
+        - controls:
+            - CC6.7
+          standard: soc2v2022
+        - controls:
+            - A.10.1.1
+          standard: iso27001v2022
+        - controls:
+            - SC-28
+          standard: nist80053v5
       continueOnError: false
-      controls:
-        - SOC2:CC6.7
-        - ISO27001:A.10.1.1
-        - NIST:SC-28
       description: Verify that full disk encryption is enabled on the system
       enabled: true
       env:

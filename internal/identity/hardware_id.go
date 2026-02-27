@@ -19,6 +19,8 @@ const (
 	minHardwareIDLength = 10
 	// commandTimeout is the timeout for hardware detection commands
 	commandTimeout = 5 * time.Second
+	// minRequiredFields is the minimum number of fields required in system_profiler output
+	minRequiredFields = 3
 )
 
 // Detector provides hardware ID detection functionality
@@ -35,12 +37,14 @@ func NewDetector() *Detector {
 // GetHardwareID returns the hardware ID for this system, using caching for performance
 func (d *Detector) GetHardwareID() string {
 	d.mu.RLock()
+
 	if d.cachedID != "" {
 		id := d.cachedID
 		d.mu.RUnlock()
 
 		return id
 	}
+
 	d.mu.RUnlock()
 
 	d.mu.Lock()
@@ -103,7 +107,7 @@ func (d *Detector) detectMacOSID() string {
 		}
 
 		parts := strings.Fields(line)
-		if len(parts) >= 3 {
+		if len(parts) >= minRequiredFields {
 			uuid := parts[2]
 			log.Debug().Str("uuid", uuid).Msg("Detected macOS Hardware UUID")
 

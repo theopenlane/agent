@@ -1,4 +1,4 @@
-package api
+package api //nolint:revive
 
 import "errors"
 
@@ -15,8 +15,6 @@ var (
 	ErrAgentRegistrationFailed = errors.New("failed to register agent")
 	// ErrAgentStatusUpdateFailed is returned when agent status update fails
 	ErrAgentStatusUpdateFailed = errors.New("failed to update agent status")
-	// ErrScheduledJobsRetrievalFailed is returned when scheduled jobs retrieval fails
-	ErrScheduledJobsRetrievalFailed = errors.New("failed to retrieve scheduled jobs")
 	// ErrAgentNotRegistered is returned when agent is not registered
 	ErrAgentNotRegistered = errors.New("agent not registered")
 	// ErrControlsRetrievalFailed is returned when controls retrieval fails
@@ -31,4 +29,12 @@ var (
 	ErrPollForWorkFailed = errors.New("failed to poll for work")
 	// ErrControlUpdateFailed is returned when control update fails
 	ErrControlUpdateFailed = errors.New("failed to update control")
+	// ErrEvidenceCreationFailed is returned when evidence creation fails
+	ErrEvidenceCreationFailed = errors.New("failed to create evidence")
+	// ErrStandardNotFound is returned when a compliance standard is not found
+	ErrStandardNotFound = errors.New("compliance standard not found")
+	// ErrControlNotFound is returned when a compliance control is not found
+	ErrControlNotFound = errors.New("compliance control not found")
+	// ErrLogContentEmpty is returned when log content is empty
+	ErrLogContentEmpty = errors.New("log content is empty")
 )

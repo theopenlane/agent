@@ -6,30 +6,27 @@ import (
 	"github.com/theopenlane/agent/config"
 )
 
+const (
+	// Default retry configuration
+	defaultRetryBackoffMinutes = 2
+)
+
 // OptionsFromConfig creates storage options from agent configuration
 func OptionsFromConfig(cfg *config.Config) []Option {
 	var opts []Option
 
-	// Determine storage mode based on configuration
-	switch cfg.Offline.Mode {
-	case config.ModeNormal:
-		opts = append(opts, WithAPIStorage(cfg.APIURL, cfg.RegistrationToken))
-	case config.ModeStandalone:
-		opts = append(opts, WithLocalStorage(cfg.DataDir, cfg.Offline.OutputDir, cfg.Offline.OutputFormat))
-	case config.ModeBuffered:
-		opts = append(opts, WithBufferedStorage(cfg.APIURL, cfg.RegistrationToken, cfg.Offline.BufferDir))
+	// Use buffered storage for all modes (consolidation)
+	opts = append(opts, WithAPIConfig(cfg.APIURL, cfg.RegistrationToken))
+	opts = append(opts, WithBuffering(cfg.Offline.BufferDir))
 
-		// Add buffering specific configuration
-		if cfg.Offline.MaxRetries > 0 {
-			opts = append(opts, WithRetryPolicy(cfg.Offline.MaxRetries, 2*time.Minute)) // nolint:mnd
-		}
+	// Add retry configuration
+	if cfg.Offline.MaxRetries > 0 {
+		opts = append(opts, WithRetryPolicy(cfg.Offline.MaxRetries, 2*time.Minute)) // nolint:mnd
+	}
 
-		if cfg.Offline.ConnectivityCheckURL != "" {
-			opts = append(opts, WithConnectivityMonitoring(cfg.Offline.ConnectivityCheckURL, cfg.Offline.ConnectivityInterval))
-		}
-	default:
-		// Default to local storage if mode is unrecognized
-		opts = append(opts, WithLocalStorage(cfg.DataDir, cfg.Offline.OutputDir, cfg.Offline.OutputFormat))
+	// Add connectivity monitoring
+	if cfg.Offline.ConnectivityCheckURL != "" {
+		opts = append(opts, WithConnectivityMonitoring(cfg.Offline.ConnectivityCheckURL, cfg.Offline.ConnectivityInterval))
 	}
 
 	// Add evidence configuration if enabled
@@ -38,7 +35,6 @@ func OptionsFromConfig(cfg *config.Config) []Option {
 			cfg.Evidence.Enabled,
 			cfg.Evidence.RetentionPeriod,
 			cfg.Evidence.MaxFileSize,
-			cfg.Evidence.CompressFiles,
 		))
 	}
 
@@ -54,9 +50,7 @@ func NewStorageFromConfig(cfg *config.Config) (Storage, error) {
 // ConfigFromAgentConfig converts agent config to storage config
 func ConfigFromAgentConfig(cfg *config.Config) *Config {
 	storageConfig := &Config{
-		DataDir:      cfg.DataDir,
-		OutputDir:    cfg.Offline.OutputDir,
-		OutputFormat: cfg.Offline.OutputFormat,
+		DataDir: cfg.DataDir,
 
 		// API configuration
 		APIURL:            cfg.APIURL,
@@ -65,7 +59,7 @@ func ConfigFromAgentConfig(cfg *config.Config) *Config {
 		// Buffering configuration
 		BufferDir:             cfg.Offline.BufferDir,
 		MaxRetries:            cfg.Offline.MaxRetries,
-		RetryBackoff:          2 * time.Minute, // Default backoff // nolint:mnd
+		RetryBackoff:          defaultRetryBackoffMinutes * time.Minute,
 		BufferRetentionPeriod: cfg.Offline.BufferRetentionPeriod,
 		SyncInterval:          cfg.Offline.SyncInterval,
 
@@ -73,24 +67,13 @@ func ConfigFromAgentConfig(cfg *config.Config) *Config {
 		EvidenceEnabled:         cfg.Evidence.Enabled,
 		EvidenceRetentionPeriod: cfg.Evidence.RetentionPeriod,
 		EvidenceMaxFileSize:     cfg.Evidence.MaxFileSize,
-		EvidenceCompressFiles:   cfg.Evidence.CompressFiles,
 
 		// Connectivity configuration
 		ConnectivityCheckURL: cfg.Offline.ConnectivityCheckURL,
 		ConnectivityInterval: cfg.Offline.ConnectivityInterval,
 	}
 
-	// Set storage mode
-	switch cfg.Offline.Mode {
-	case config.ModeNormal:
-		storageConfig.Mode = ModeAPI
-	case config.ModeStandalone:
-		storageConfig.Mode = ModeLocal
-	case config.ModeBuffered:
-		storageConfig.Mode = ModeBuffered
-	default:
-		storageConfig.Mode = ModeLocal
-	}
+	// Mode consolidation complete - always use buffered storage
 
 	return storageConfig
 }

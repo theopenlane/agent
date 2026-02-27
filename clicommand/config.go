@@ -2,6 +2,7 @@ package clicommand
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,14 @@ import (
 	"github.com/theopenlane/agent/internal/constants"
 	cli "github.com/urfave/cli/v3"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	// Environment variable parsing constants
+	keyValueParts = 2
+
+	// YAML formatting constants
+	yamlIndentSize = 2
 )
 
 // ConfigInitFlags are the flags for the config init command
@@ -42,7 +51,7 @@ var ConfigInitFlags = []cli.Flag{
 }
 
 // ConfigInitAction initializes a new agent configuration (urfave/cli v3 signature)
-func ConfigInitAction(ctx context.Context, cmd *cli.Command) error {
+func ConfigInitAction(_ context.Context, cmd *cli.Command) error {
 	outputPath := cmd.String("output")
 	force := cmd.Bool("force")
 
@@ -69,7 +78,7 @@ func ConfigInitAction(ctx context.Context, cmd *cli.Command) error {
 
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, config.DefaultDirectoryPermissions); err != nil {
 		return fmt.Errorf("%w %s: %w", ErrFailedToCreateDirectory, dir, err)
 	}
 
@@ -102,7 +111,7 @@ var ConfigValidateFlags = []cli.Flag{
 }
 
 // ConfigValidateAction validates an agent configuration
-func ConfigValidateAction(ctx context.Context, cmd *cli.Command) error {
+func ConfigValidateAction(_ context.Context, cmd *cli.Command) error {
 	configPath := cmd.String("config")
 	verbose := cmd.Bool("verbose")
 
@@ -164,7 +173,7 @@ var ConfigShowFlags = []cli.Flag{
 }
 
 // ConfigShowAction displays the current configuration
-func ConfigShowAction(ctx context.Context, cmd *cli.Command) error {
+func ConfigShowAction(_ context.Context, cmd *cli.Command) error {
 	configPath := cmd.String("config")
 	format := cmd.String("format")
 	redact := cmd.Bool("redact")
@@ -182,7 +191,7 @@ func ConfigShowAction(ctx context.Context, cmd *cli.Command) error {
 			for j, env := range cfg.Checks[i].Env {
 				if containsSensitiveKey(env) {
 					parts := splitEnvVar(env)
-					if len(parts) == 2 {
+					if len(parts) == keyValueParts {
 						cfg.Checks[i].Env[j] = parts[0] + "=[REDACTED]"
 					}
 				}
@@ -201,12 +210,12 @@ func ConfigShowAction(ctx context.Context, cmd *cli.Command) error {
 		fmt.Print(string(data))
 
 	case "json":
-		encoder := yaml.NewEncoder(os.Stdout)
-		encoder.SetIndent(2)
-
-		if err := encoder.Encode(cfg); err != nil {
+		data, err := json.MarshalIndent(cfg, "", strings.Repeat(" ", yamlIndentSize))
+		if err != nil {
 			return fmt.Errorf("%w: %w", ErrFailedToEncodeConfig, err)
 		}
+
+		fmt.Println(string(data))
 
 	default:
 		return fmt.Errorf("%w: %s (supported: yaml, json)", ErrUnsupportedFormat, format)
@@ -216,9 +225,10 @@ func ConfigShowAction(ctx context.Context, cmd *cli.Command) error {
 }
 
 // VersionAction shows version information
-func VersionAction(ctx context.Context, cmd *cli.Command) error {
+func VersionAction(_ context.Context, _ *cli.Command) error {
 	fmt.Printf("openlane-agent version %s\n", constants.FullVersion())
 	fmt.Printf("User-Agent: %s\n", constants.UserAgent())
+
 	return nil
 }
 
@@ -241,8 +251,8 @@ func containsSensitiveKey(envVar string) bool {
 }
 
 func splitEnvVar(envVar string) []string {
-	parts := strings.SplitN(envVar, "=", 2)
-	if len(parts) == 2 {
+	parts := strings.SplitN(envVar, "=", keyValueParts)
+	if len(parts) == keyValueParts {
 		return parts
 	}
 

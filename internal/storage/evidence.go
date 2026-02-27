@@ -11,27 +11,46 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/theopenlane/agent/internal/models"
 )
+
+// EvidenceConfig contains evidence-specific configuration
+type EvidenceConfig struct {
+	Enabled         bool
+	DataDir         string
+	MaxFileSize     int64
+	RetentionPeriod time.Duration
+}
 
 // EvidenceService implements evidence collection and management
 type EvidenceService struct {
-	config *Config
+	config *EvidenceConfig
 }
 
 // NewEvidenceService creates a new evidence service
-func NewEvidenceService(config *Config) *EvidenceService {
+func NewEvidenceService(config *EvidenceConfig) *EvidenceService {
 	return &EvidenceService{
 		config: config,
 	}
 }
 
+// NewEvidenceServiceFromConfig creates evidence service from storage config
+func NewEvidenceServiceFromConfig(config *Config) *EvidenceService {
+	return NewEvidenceService(&EvidenceConfig{
+		Enabled:         config.EvidenceEnabled,
+		DataDir:         config.DataDir,
+		MaxFileSize:     config.EvidenceMaxFileSize,
+		RetentionPeriod: config.EvidenceRetentionPeriod,
+	})
+}
+
 // CollectEvidence collects evidence files from the specified paths
-func (es *EvidenceService) CollectEvidence(ctx context.Context, paths []string) ([]EvidenceFile, error) {
-	if !es.config.EvidenceEnabled || len(paths) == 0 {
+func (es *EvidenceService) CollectEvidence(ctx context.Context, paths []string) ([]models.EvidenceFile, error) {
+	if !es.config.Enabled || len(paths) == 0 {
 		return nil, nil
 	}
 
-	var evidenceFiles []EvidenceFile
+	var evidenceFiles []models.EvidenceFile
 
 	for _, path := range paths {
 		files, err := es.collectFromPath(ctx, path)
@@ -50,7 +69,7 @@ func (es *EvidenceService) CollectEvidence(ctx context.Context, paths []string) 
 }
 
 // collectFromPath collects evidence from a single path (file or directory)
-func (es *EvidenceService) collectFromPath(ctx context.Context, path string) ([]EvidenceFile, error) {
+func (es *EvidenceService) collectFromPath(_ context.Context, path string) ([]models.EvidenceFile, error) {
 	// Handle relative paths
 	if !filepath.IsAbs(path) {
 		if es.config.DataDir != "" {
@@ -85,12 +104,12 @@ func (es *EvidenceService) collectFromPath(ctx context.Context, path string) ([]
 		return nil, err
 	}
 
-	return []EvidenceFile{*file}, nil
+	return []models.EvidenceFile{*file}, nil
 }
 
 // collectFromDirectory recursively collects evidence from a directory
-func (es *EvidenceService) collectFromDirectory(dirPath string) ([]EvidenceFile, error) {
-	var evidenceFiles []EvidenceFile
+func (es *EvidenceService) collectFromDirectory(dirPath string) ([]models.EvidenceFile, error) {
+	var evidenceFiles []models.EvidenceFile
 
 	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -104,8 +123,8 @@ func (es *EvidenceService) collectFromDirectory(dirPath string) ([]EvidenceFile,
 		}
 
 		// Check file size limits
-		if es.config.EvidenceMaxFileSize > 0 && info.Size() > es.config.EvidenceMaxFileSize {
-			log.Warn().Str("path", path).Int64("size", info.Size()).Int64("max_size", es.config.EvidenceMaxFileSize).Msg("Evidence file exceeds size limit, skipping")
+		if es.config.MaxFileSize > 0 && info.Size() > es.config.MaxFileSize {
+			log.Warn().Str("path", path).Int64("size", info.Size()).Int64("max_size", es.config.MaxFileSize).Msg("Evidence file exceeds size limit, skipping")
 
 			return nil
 		}
@@ -130,7 +149,7 @@ func (es *EvidenceService) collectFromDirectory(dirPath string) ([]EvidenceFile,
 }
 
 // collectFromFile collects evidence from a single file
-func (es *EvidenceService) collectFromFile(filePath string, info os.FileInfo) (*EvidenceFile, error) {
+func (es *EvidenceService) collectFromFile(filePath string, info os.FileInfo) (*models.EvidenceFile, error) {
 	// Read file content
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -146,7 +165,7 @@ func (es *EvidenceService) collectFromFile(filePath string, info os.FileInfo) (*
 		contentType = "application/octet-stream"
 	}
 
-	evidenceFile := &EvidenceFile{
+	evidenceFile := &models.EvidenceFile{
 		Path:        filePath,
 		Content:     content,
 		Size:        info.Size(),
@@ -165,12 +184,12 @@ func (es *EvidenceService) collectFromFile(filePath string, info os.FileInfo) (*
 }
 
 // CreateEvidenceFromOutput creates evidence files from command output
-func (es *EvidenceService) CreateEvidenceFromOutput(checkName string, stdout, stderr []byte) ([]EvidenceFile, error) {
-	if !es.config.EvidenceEnabled {
+func (es *EvidenceService) CreateEvidenceFromOutput(_ context.Context, checkName string, stdout, stderr []byte) ([]models.EvidenceFile, error) {
+	if !es.config.Enabled {
 		return nil, nil
 	}
 
-	var evidenceFiles []EvidenceFile
+	var evidenceFiles []models.EvidenceFile
 
 	timestamp := time.Now()
 
@@ -180,6 +199,7 @@ func (es *EvidenceService) CreateEvidenceFromOutput(checkName string, stdout, st
 			fmt.Sprintf("%s-stdout", checkName),
 			stdout,
 			timestamp,
+			checkName,
 		)
 		evidenceFiles = append(evidenceFiles, *stdoutFile)
 	}
@@ -190,6 +210,7 @@ func (es *EvidenceService) CreateEvidenceFromOutput(checkName string, stdout, st
 			fmt.Sprintf("%s-stderr", checkName),
 			stderr,
 			timestamp,
+			checkName,
 		)
 		evidenceFiles = append(evidenceFiles, *stderrFile)
 	}
@@ -202,11 +223,11 @@ func (es *EvidenceService) CreateEvidenceFromOutput(checkName string, stdout, st
 }
 
 // createOutputEvidenceFile creates an evidence file from command output
-func (es *EvidenceService) createOutputEvidenceFile(name string, content []byte, timestamp time.Time) *EvidenceFile {
+func (es *EvidenceService) createOutputEvidenceFile(name string, content []byte, timestamp time.Time, checkName string) *models.EvidenceFile {
 	// Calculate checksum
 	checksum := fmt.Sprintf("%x", sha256.Sum256(content))
 
-	return &EvidenceFile{
+	return &models.EvidenceFile{
 		Path:        name, // Virtual path for output
 		Content:     content,
 		Size:        int64(len(content)),
@@ -214,15 +235,16 @@ func (es *EvidenceService) createOutputEvidenceFile(name string, content []byte,
 		ContentType: "text/plain",
 		CreatedAt:   timestamp,
 		Metadata: map[string]string{
-			"type":   "command_output",
-			"source": strings.TrimSuffix(name, filepath.Ext(name)),
+			"type":       "command_output",
+			"source":     strings.TrimSuffix(name, filepath.Ext(name)),
+			"check_name": checkName,
 		},
 	}
 }
 
 // CleanupOldEvidence removes old evidence files based on retention policy
 func (es *EvidenceService) CleanupOldEvidence(retentionPeriod time.Duration) error {
-	if !es.config.EvidenceEnabled || retentionPeriod <= 0 || es.config.DataDir == "" {
+	if !es.config.Enabled || retentionPeriod <= 0 || es.config.DataDir == "" {
 		return nil
 	}
 
@@ -267,19 +289,4 @@ func (es *EvidenceService) CleanupOldEvidence(retentionPeriod time.Duration) err
 	}
 
 	return nil
-}
-
-// CompressEvidence compresses evidence content if enabled
-func (es *EvidenceService) CompressEvidence(evidence []EvidenceFile) []EvidenceFile {
-	if !es.config.EvidenceCompressFiles {
-		return evidence
-	}
-
-	// Note: Compression implementation would go here
-	// For now, we'll just return the evidence as-is
-	// In a real implementation, you might use gzip or other compression
-
-	log.Debug().Int("files", len(evidence)).Msg("Evidence compression requested but not implemented")
-
-	return evidence
 }

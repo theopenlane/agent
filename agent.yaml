@@ -1,13 +1,31 @@
-registration_token: ${OPENLANE_REGISTRATION_TOKEN}
-api_url: https://api.theopenlane.io
-agent_name: production-compliance-agent
-log_level: info
-data_dir: ./data
-poll_interval: 1m0s
+registrationToken: tola_aAj2v7WjgJ3SZX7jJXMcOMrjjMj0rdHN5IOWMShvCPs3cIkvWnoBoRF0tA8l57pb
+apiUrl: http://localhost:17608
+agentName: production-compliance-agent
+logLevel: debug
+dataDir: ./data
+pollInterval: 1m0s
 spawn: 1
-max_concurrency: 3
-default_timeout: 5m0s
+maxConcurrency: 3
+defaultTimeout: 5m0s
+offline:
+  mode: buffered
+  outputDir: ./results
+  bufferDir: ./buffer
 checks:
+    - name: test-check
+      description: Simple test check that runs immediately
+      command: echo
+      args:
+        - "Test check executed successfully"
+      schedule: "*/1 * * * *"
+      timeout: 30s
+      compliance_standards:
+        - standard: soc2v2022
+          controls:
+            - TEST.001
+      tags:
+        - test
+      enabled: true
     - name: aws-iam-compliance
       description: Check AWS IAM configuration for compliance issues
       command: ./scripts/check-aws-iam.sh
@@ -15,15 +33,13 @@ checks:
         - AWS_REGION=us-east-1
       schedule: 0 */4 * * *
       timeout: 10m0s
-      controls:
-        - SOC2:CC6.1
-        - ISO27001:A.9.2.1
-      tags:
-        - aws
-        - iam
-        - critical
-      enabled: true
-      continue_on_error: false
+      compliance_standards:
+        - standard: soc2v2022
+          controls:
+            - CC6.1
+        - standard: iso27001v2022
+          controls:
+            - A.9.2.1
     - name: github-audit
       description: Audit GitHub organization settings
       command: python3
@@ -35,8 +51,10 @@ checks:
         - GITHUB_TOKEN=${GITHUB_TOKEN}
       schedule: 0 0 * * *
       timeout: 5m0s
-      controls:
-        - SOC2:CC6.3
+      compliance_standards:
+        - standard: soc2v2022
+          controls:
+            - CC6.3
       tags:
         - github
         - access-control
@@ -44,13 +62,12 @@ checks:
       continue_on_error: false
     - name: database-compliance
       description: Check database security settings
-      command: ./scripts/check-database.rb
+      command: ./scripts/check-database.sh
       schedule: '*/30 * * * *'
       timeout: 2m0s
-      controls:
-        - PCI-DSS:8.2
-      tags:
-        - database
-        - security
-      enabled: false
+      compliance_standards:
+        - standard: pcidss4
+          controls:
+            - "8.2"
+      enabled: true
       continue_on_error: false

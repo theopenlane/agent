@@ -61,4 +61,8 @@ var (
 	ErrFailedToFetchOpenlaneControls = errors.New("failed to fetch Openlane controls")
 	// ErrFailedToGetControlsForStatus is returned when getting controls for status fails
 	ErrFailedToGetControlsForStatus = errors.New("failed to get controls for status")
+	// ErrMissingCommand is returned when command is missing in job configuration
+	ErrMissingCommand = errors.New("missing command in job configuration")
+	// ErrJobTemplateIDNotFound is returned when job template ID is not found for a check
+	ErrJobTemplateIDNotFound = errors.New("job template ID not found for check")
 )

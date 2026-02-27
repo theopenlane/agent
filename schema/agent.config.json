@@ -14,6 +14,12 @@
       },
       "type": "array"
     },
+    "[]config.ComplianceStandard": {
+      "items": {
+        "$ref": "#/$defs/config.ComplianceStandard"
+      },
+      "type": "array"
+    },
     "[]config.PlatformVariant": {
       "items": {
         "$ref": "#/$defs/config.PlatformVariant"
@@ -52,10 +58,6 @@
       },
       "additionalProperties": false,
       "type": "object",
-      "required": [
-        "name",
-        "command"
-      ],
       "description": "ActionCommand represents a command to execute on pass/fail"
     },
     "config.ActionConfig": {
@@ -107,8 +109,8 @@
         "timeout": {
           "type": "integer"
         },
-        "controls": {
-          "$ref": "#/$defs/[]string",
+        "compliance_standards": {
+          "$ref": "#/$defs/[]config.ComplianceStandard",
           "description": "Compliance context"
         },
         "tags": {
@@ -139,12 +141,20 @@
       },
       "additionalProperties": false,
       "type": "object",
-      "required": [
-        "name",
-        "command",
-        "schedule"
-      ],
       "description": "Check represents a single compliance check configuration"
+    },
+    "config.ComplianceStandard": {
+      "properties": {
+        "standard": {
+          "type": "string"
+        },
+        "controls": {
+          "$ref": "#/$defs/[]string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ComplianceStandard represents a compliance standard and its associated controls"
     },
     "config.EvidenceConfig": {
       "properties": {
@@ -341,9 +351,6 @@
   },
   "additionalProperties": false,
   "type": "object",
-  "required": [
-    "registrationToken"
-  ],
   "title": "Openlane Agent Configuration",
   "description": "Configuration schema for the Openlane compliance automation agent"
 }

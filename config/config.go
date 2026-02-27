@@ -15,6 +15,7 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/mcuadros/go-defaults"
 	jsonschemavalidator "github.com/santhosh-tekuri/jsonschema/v5"
+	"github.com/theopenlane/agent/schema"
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -34,12 +35,20 @@ const (
 	DefaultTimeoutSeconds = 30 // nolint:mnd
 	// DefaultFileSizeLimit in bytes (1024 bytes = 1KB)
 	DefaultFileSizeLimit = 1024 // nolint:mnd
+
+	// Agent configuration defaults
+	defaultMaxConcurrency              = 3
+	defaultTimeoutMinutes              = 5
+	defaultConnectivityIntervalSeconds = 30
+	defaultSyncIntervalMinutes         = 5
+	defaultMaxRetriesConfig            = 5
+	defaultCheckTimeoutMinutes         = 10
 )
 
 // Config represents the agent configuration loaded from agent.yaml
 type Config struct {
 	// API connection settings
-	RegistrationToken string `json:"registrationToken" koanf:"registrationToken" jsonschema:"required" sensitive:"true" description:"Token used to register with the Openlane platform"`
+	RegistrationToken string `json:"registrationToken" koanf:"registrationToken" sensitive:"true" description:"Token used to register with the Openlane platform"`
 	APIURL            string `json:"apiUrl" koanf:"apiUrl" default:"https://api.theopenlane.io" description:"Base URL for the Openlane API"`
 
 	// Agent identification
@@ -52,9 +61,10 @@ type Config struct {
 	PollInterval time.Duration `json:"pollInterval" koanf:"pollInterval" default:"1m" description:"Interval for polling the platform for work"`
 
 	// Execution settings
-	Spawn          int           `json:"spawn" koanf:"spawn" default:"1" description:"Number of worker processes to spawn"`
-	MaxConcurrency int           `json:"maxConcurrency" koanf:"maxConcurrency" default:"3" description:"Maximum number of concurrent check executions"`
-	DefaultTimeout time.Duration `json:"defaultTimeout" koanf:"defaultTimeout" default:"5m" description:"Default timeout for check execution"`
+	Spawn            int           `json:"spawn" koanf:"spawn" default:"1" description:"Number of worker processes to spawn"`
+	MaxConcurrency   int           `json:"maxConcurrency" koanf:"maxConcurrency" default:"3" description:"Maximum number of concurrent check executions"`
+	DefaultTimeout   time.Duration `json:"defaultTimeout" koanf:"defaultTimeout" default:"5m" description:"Default timeout for check execution"`
+	EnableRemotePoll bool          `json:"enableRemotePoll" koanf:"enableRemotePoll" default:"false" description:"Enable polling for remote job definitions from the platform API"`
 
 	// Evidence settings
 	Evidence EvidenceConfig `json:"evidence" koanf:"evidence" description:"Evidence collection and retention configuration"`
@@ -126,14 +136,20 @@ type IdentityConfig struct {
 	OverrideHardwareID string        `json:"overrideHardwareId,omitempty" koanf:"overrideHardwareId" description:"Override hardware ID with this value instead of detection"`
 }
 
+// ComplianceStandard represents a compliance standard and its associated controls
+type ComplianceStandard struct {
+	Standard string   `json:"standard" koanf:"standard" description:"Compliance standard identifier (e.g., soc2v2022, nist80053v5)"`
+	Controls []string `json:"controls" koanf:"controls" description:"Control reference codes within this standard"`
+}
+
 // Check represents a single compliance check configuration
 type Check struct {
 	// Basic info
-	Name        string `json:"name" koanf:"name" jsonschema:"required" description:"Unique name for this check"`
+	Name        string `json:"name" koanf:"name" description:"Unique name for this check"`
 	Description string `json:"description,omitempty" koanf:"description" description:"Human-readable description of what this check validates"`
 
 	// Execution details
-	Command string   `json:"command" koanf:"command" jsonschema:"required" description:"Command to execute for this check"`
+	Command string   `json:"command" koanf:"command" description:"Command to execute for this check"`
 	Args    []string `json:"args,omitempty" koanf:"args" description:"Arguments to pass to the command"`
 	WorkDir string   `json:"workDir,omitempty" koanf:"workDir" description:"Working directory for command execution"`
 
@@ -141,12 +157,12 @@ type Check struct {
 	Env []string `json:"env,omitempty" koanf:"env" description:"Environment variables for command execution"`
 
 	// Scheduling
-	Schedule string        `json:"schedule" koanf:"schedule" jsonschema:"required" description:"Cron expression for when to run this check"`
+	Schedule string        `json:"schedule" koanf:"schedule" description:"Cron expression for when to run this check"`
 	Timeout  time.Duration `json:"timeout" koanf:"timeout" default:"5m" description:"Timeout for this check execution"`
 
 	// Compliance context
-	Controls []string `json:"controls,omitempty" koanf:"controls" description:"Compliance controls this check validates"`
-	Tags     []string `json:"tags,omitempty" koanf:"tags" description:"Tags for categorizing and filtering checks"`
+	ComplianceStandards []ComplianceStandard `json:"complianceStandards,omitempty" koanf:"compliance_standards" description:"Compliance standards and controls this check validates"`
+	Tags                []string             `json:"tags,omitempty" koanf:"tags" description:"Tags for categorizing and filtering checks"`
 
 	// Execution options
 	Enabled         bool `json:"enabled" koanf:"enabled" default:"true" description:"Whether this check is enabled"`
@@ -196,8 +212,8 @@ type ActionConfig struct {
 
 // ActionCommand represents a command to execute on pass/fail
 type ActionCommand struct {
-	Name            string        `json:"name" koanf:"name" jsonschema:"required" description:"Unique name for this action"`
-	Command         string        `json:"command" koanf:"command" jsonschema:"required" description:"Command to execute"`
+	Name            string        `json:"name" koanf:"name" description:"Unique name for this action"`
+	Command         string        `json:"command" koanf:"command" description:"Command to execute"`
 	Args            []string      `json:"args,omitempty" koanf:"args" description:"Arguments to pass to the command"`
 	WorkDir         string        `json:"workDir,omitempty" koanf:"workDir" description:"Working directory for command execution"`
 	Env             []string      `json:"env,omitempty" koanf:"env" description:"Environment variables for command execution"`
@@ -205,40 +221,8 @@ type ActionCommand struct {
 	ContinueOnError bool          `json:"continueOnError" koanf:"continueOnError" default:"false" description:"Continue with other actions if this command fails"`
 }
 
-// Result represents the output from a compliance check
-type Result struct {
-	// Execution metadata
-	CheckName      string    `json:"checkName"`
-	ScheduledJobID string    `json:"scheduledJobId,omitempty"`
-	ExecutedAt     time.Time `json:"executedAt"`
-	StartTime      time.Time `json:"startTime"`
-	EndTime        time.Time `json:"endTime"`
-	Duration       string    `json:"duration"`
-	ExitCode       int       `json:"exitCode"`
-
-	// Compliance findings
-	Findings []Finding `json:"findings"`
-
-	// Supporting evidence
-	Evidence map[string]any `json:"evidence,omitempty"`
-
-	// Metrics and counts
-	Metrics map[string]any `json:"metrics,omitempty"`
-
-	// Error information
-	Error  string `json:"error,omitempty"`
-	Stderr string `json:"stderr,omitempty"`
-
-	// Compliance context
-	Controls []string `json:"controls,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
-
-	// Evidence file upload results
-	EvidenceFiles []*EvidenceFileResult `json:"evidenceFiles,omitempty"`
-
-	// Overall pass/fail status
-	Passed bool `json:"passed"`
-}
+// Result is a type alias for the standardized compliance check result
+type Result = schema.ComplianceCheckResult
 
 // Finding represents a single compliance finding
 type Finding struct {
@@ -352,12 +336,32 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", ErrFailedToUnmarshalConfigFile, err)
 	}
 
-	// Validate configuration
+	// Explicit env aliases for camelCase top-level keys that don't map cleanly
+	// via koanf's generic env provider transform.
+	if v := firstNonEmptyEnv("OPENLANE_AGENT_REGISTRATIONTOKEN", "OPENLANE_AGENT_REGISTRATION_TOKEN"); v != "" {
+		config.RegistrationToken = v
+	}
+
+	if v := firstNonEmptyEnv("OPENLANE_AGENT_APIURL", "OPENLANE_AGENT_API_URL"); v != "" {
+		config.APIURL = v
+	}
+
+	// Validate configuration structure
 	if err := ValidateConfig(config); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfigurationValidationFailed, err)
 	}
 
 	return config, nil
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+
+	return ""
 }
 
 // GenerateJSONSchema generates a JSON Schema for the agent configuration
@@ -378,8 +382,13 @@ func GenerateJSONSchema() (*jsonschema.Schema, error) {
 	return schema, nil
 }
 
-// ValidateConfig validates a configuration against the JSON Schema and business rules
+// ValidateConfig validates configuration structure only (JSON schema)
 func ValidateConfig(config *Config) error {
+	return ValidateConfigStructure(config)
+}
+
+// ValidateConfigStructure validates configuration structure only (JSON schema)
+func ValidateConfigStructure(config *Config) error {
 	// Generate schema
 	schema, err := GenerateJSONSchema()
 	if err != nil {
@@ -419,9 +428,19 @@ func ValidateConfig(config *Config) error {
 		return fmt.Errorf("%w: %w", ErrSchemaValidationFailed, err)
 	}
 
-	// Additional business logic validation
+	return nil
+}
+
+// ValidateConfigForRuntime validates config for agent runtime operation
+func ValidateConfigForRuntime(config *Config) error {
+	// First validate structure
+	if err := ValidateConfigStructure(config); err != nil {
+		return err
+	}
+
+	// Then validate runtime requirements
 	if err := validateBusinessRules(config); err != nil {
-		return fmt.Errorf("%w: %w", ErrBusinessRuleValidationFailed, err)
+		return fmt.Errorf("runtime validation failed: %w", err)
 	}
 
 	return nil
@@ -465,7 +484,7 @@ func validateBusinessRules(config *Config) error {
 			return ErrOutputDirRequired
 		}
 		// Create output directory if it doesn't exist
-		if err := os.MkdirAll(config.Offline.OutputDir, 0o755 /* nolint:mnd */); err != nil {
+		if err := os.MkdirAll(config.Offline.OutputDir, DefaultDirectoryPermissions); err != nil {
 			return fmt.Errorf("%w %s: %w", ErrFailedToCreateOutputDir, config.Offline.OutputDir, err)
 		}
 	case ModeNormal, ModeBuffered:
@@ -484,7 +503,7 @@ func validateBusinessRules(config *Config) error {
 				return ErrBufferDirRequired
 			}
 			// Create buffer directory if it doesn't exist
-			if err := os.MkdirAll(config.Offline.BufferDir, 0o755 /* nolint:mnd */); err != nil {
+			if err := os.MkdirAll(config.Offline.BufferDir, DefaultDirectoryPermissions); err != nil {
 				return fmt.Errorf("%w %s: %w", ErrFailedToCreateBufferDir, config.Offline.BufferDir, err)
 			}
 		}
@@ -496,7 +515,7 @@ func validateBusinessRules(config *Config) error {
 	}
 
 	// Create data directory if it doesn't exist
-	if err := os.MkdirAll(config.DataDir, 0o755 /* nolint:mnd */); err != nil {
+	if err := os.MkdirAll(config.DataDir, DefaultDirectoryPermissions); err != nil {
 		return fmt.Errorf("%w %s: %w", ErrFailedToCreateDataDir, config.DataDir, err)
 	}
 
@@ -590,7 +609,7 @@ func validateActionConfig(action *ActionConfig, context string) error {
 func (c *Config) SaveConfig(path string) error {
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755 /* nolint:mnd */); err != nil {
+	if err := os.MkdirAll(dir, DefaultDirectoryPermissions); err != nil {
 		return fmt.Errorf("%w: %w", ErrFailedToCreateConfigDir, err)
 	}
 
@@ -601,7 +620,7 @@ func (c *Config) SaveConfig(path string) error {
 	}
 
 	// Write file
-	if err := os.WriteFile(path, data, 0o600 /* nolint:mnd */); err != nil {
+	if err := os.WriteFile(path, data, RestrictedFilePermissions); err != nil {
 		return fmt.Errorf("%w: %w", ErrFailedToWriteConfigFile, err)
 	}
 
@@ -632,6 +651,94 @@ func (c *Config) GetEnabledChecks() []Check {
 	return enabled
 }
 
+// GetAllControls returns all controls from all standards as a flat list (for backward compatibility)
+func (c *Check) GetAllControls() []string {
+	var controls []string
+	for _, standard := range c.ComplianceStandards {
+		controls = append(controls, standard.Controls...)
+	}
+
+	return controls
+}
+
+// GetControlsByStandard returns a map of standard -> controls
+func (c *Check) GetControlsByStandard() map[string][]string {
+	controlsByStandard := make(map[string][]string)
+	for _, standard := range c.ComplianceStandards {
+		controlsByStandard[standard.Standard] = standard.Controls
+	}
+
+	return controlsByStandard
+}
+
+// HasSingleControl returns true if this check has exactly one control across all standards
+func (c *Check) HasSingleControl() bool {
+	totalControls := 0
+	for _, standard := range c.ComplianceStandards {
+		totalControls += len(standard.Controls)
+	}
+
+	return totalControls == 1
+}
+
+// GetStandards returns all standard identifiers
+func (c *Check) GetStandards() []string {
+	var standards []string
+	for _, standard := range c.ComplianceStandards {
+		standards = append(standards, standard.Standard)
+	}
+
+	return standards
+}
+
+// ShouldExecuteCheck determines if a check should run based on validated controls
+// Returns (shouldExecute, validControls, reason)
+func (c *Check) ShouldExecuteCheck(validatedControls map[string][]string) (bool, map[string][]string, string) {
+	if len(c.ComplianceStandards) == 0 {
+		// No compliance standards configured, run the check
+		return true, make(map[string][]string), "no compliance standards configured"
+	}
+
+	// Count total controls and valid controls
+	totalControls := 0
+	validControls := make(map[string][]string)
+
+	for _, standard := range c.ComplianceStandards {
+		totalControls += len(standard.Controls)
+
+		// Check if any controls from this standard are valid
+		if validStandardControls, exists := validatedControls[standard.Standard]; exists && len(validStandardControls) > 0 {
+			validControls[standard.Standard] = validStandardControls
+		}
+	}
+
+	// Count valid controls
+	validControlCount := 0
+	for _, controls := range validControls {
+		validControlCount += len(controls)
+	}
+
+	// Apply fail-open logic:
+	// 1. If only 1 control total and it's invalid, skip check
+	// 2. If any controls are valid, run check (even if some are invalid)
+
+	if totalControls == 1 && validControlCount == 0 {
+		return false, validControls, "single control reference is invalid"
+	}
+
+	if validControlCount > 0 {
+		return true, validControls, fmt.Sprintf("found %d valid controls out of %d total", validControlCount, totalControls)
+	}
+
+	// All controls are invalid but there are multiple controls - run anyway
+	if totalControls > 1 {
+		return true, validControls, "multiple controls configured, running despite validation failures"
+	}
+
+	// Shouldn't reach here, but default to running
+	return true, validControls, "default: running check"
+}
+
 // isValidCronExpression performs basic validation of cron expressions
 func isValidCronExpression(expr string) bool {
 	// Use robfig/cron library for proper validation if needed
@@ -657,12 +764,12 @@ func ExampleConfig() *Config {
 		DataDir:           "./data",
 		PollInterval:      1 * time.Minute,
 		Spawn:             1,
-		MaxConcurrency:    3,
-		DefaultTimeout:    5 * time.Minute,
+		MaxConcurrency:    defaultMaxConcurrency,
+		DefaultTimeout:    defaultTimeoutMinutes * time.Minute,
 		Evidence: EvidenceConfig{
 			Enabled:         true,
-			RetentionPeriod: 30 * 24 * time.Hour, // 30 days // nolint:mnd
-			MaxFileSize:     100 * 1024 * 1024,   // 100MB // nolint:mnd
+			RetentionPeriod: 30 * 24 * time.Hour,                               // 30 days // nolint:mnd
+			MaxFileSize:     100 * DefaultFileSizeLimit * DefaultFileSizeLimit, // 100MB
 			CompressFiles:   false,
 		},
 		Offline: OfflineConfig{
@@ -670,9 +777,9 @@ func ExampleConfig() *Config {
 			OutputDir:             "./results",
 			OutputFormat:          "json",
 			BufferDir:             "./buffer",
-			ConnectivityInterval:  30 * time.Second,
-			SyncInterval:          5 * time.Minute,
-			MaxRetries:            5,
+			ConnectivityInterval:  defaultConnectivityIntervalSeconds * time.Second,
+			SyncInterval:          defaultSyncIntervalMinutes * time.Minute,
+			MaxRetries:            defaultMaxRetriesConfig,
 			BufferRetentionPeriod: 7 * 24 * time.Hour, // 7 days // nolint:mnd
 		},
 		Checks: []Check{
@@ -681,13 +788,19 @@ func ExampleConfig() *Config {
 				Description: "Check AWS IAM configuration for compliance issues",
 				Command:     "./scripts/check-aws-iam.sh",
 				Schedule:    "0 */4 * * *", // Every 4 hours
-				Timeout:     10 * time.Minute,
+				Timeout:     defaultCheckTimeoutMinutes * time.Minute,
 				Env: []string{
 					"AWS_REGION=us-east-1",
 				},
-				Controls: []string{
-					"SOC2:CC6.1",
-					"ISO27001:A.9.2.1",
+				ComplianceStandards: []ComplianceStandard{
+					{
+						Standard: "soc2v2022",
+						Controls: []string{"CC6.1"},
+					},
+					{
+						Standard: "iso27001v2022",
+						Controls: []string{"A.9.2.1"},
+					},
 				},
 				Tags:    []string{"aws", "iam", "critical"},
 				Enabled: true,
@@ -717,14 +830,23 @@ func ExampleConfig() *Config {
 				Description: "Verify that full disk encryption is enabled on the system",
 				Command:     "./scripts/check-disk-encryption.sh",
 				Schedule:    "0 6 * * *", // Daily at 6 AM
-				Timeout:     5 * time.Minute,
+				Timeout:     defaultTimeoutMinutes * time.Minute,
 				Env: []string{
 					"ENCRYPTION_POLICY=required",
 				},
-				Controls: []string{
-					"SOC2:CC6.7",
-					"ISO27001:A.10.1.1",
-					"NIST:SC-28",
+				ComplianceStandards: []ComplianceStandard{
+					{
+						Standard: "soc2v2022",
+						Controls: []string{"CC6.7"},
+					},
+					{
+						Standard: "iso27001v2022",
+						Controls: []string{"A.10.1.1"},
+					},
+					{
+						Standard: "nist80053v5",
+						Controls: []string{"SC-28"},
+					},
 				},
 				Tags:    []string{"encryption", "storage", "host-security"},
 				Enabled: true,

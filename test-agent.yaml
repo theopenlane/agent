@@ -1,4 +1,4 @@
-registrationToken: "tolp_agPasbhJHDB2ztIeT807Nf5LnxExfEXvYkTq6Qq4AyWcX3Bh2DgaHmUPhyoMoC3V"
+registrationToken: "tolp_0ZjgONWfrRZtHlyOb6pNr20IIxDxVC4cMlAOOtObKG0jkXYlI1dn2K7RMcvrmCCn"
 apiUrl: "http://localhost:17608"
 agentName: "test-compliance-agent"
 logLevel: "debug"
@@ -7,6 +7,7 @@ pollInterval: "10s"
 spawn: 1
 maxConcurrency: 2
 defaultTimeout: "5m"
+enableRemotePoll: false
 
 evidence:
   enabled: true
@@ -15,21 +16,23 @@ evidence:
   compressFiles: false
 
 checks:
-  - name: "local-security-scan" 
-    description: "Test security scan"
-    command: "echo"
-    args: ["Testing compliance check execution"]
+  - name: "disk-encryption-check"
+    description: "Verify that FileVault disk encryption is enabled on macOS"
+    command: "fdesetup"
+    args: ["status"]
     schedule: "*/1 * * * *"
     timeout: "30s"
-    controls:
-      - "TEST:001"
-      - "TEST:002" 
+    complianceStandards:
+      - standard: "soc2v2022"
+        controls:
+          - "CC6.7"
     tags:
-      - "test"
-      - "security"
+      - "encryption"
+      - "macos"
+      - "data-protection"
     enabled: true
     evidencePaths:
-      - "./evidence/test/"
+      - "./evidence/disk-encryption/"
     onPass:
       uploadEvidence: true
       updateControlStatus: true
@@ -37,7 +40,7 @@ checks:
       uploadEvidence: true
       updateControlStatus: true
       commands:
-        - name: "log-failure"
+        - name: "log-encryption-failure"
           command: "echo"
-          args: ["Security scan failed"]
+          args: ["WARNING: Disk encryption not enabled - SOC2 CC6.7 control failure"]
           timeout: "10s"

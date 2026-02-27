@@ -12,7 +12,7 @@ var AgentCommands = []*cli.Command{
 	{
 		Name:        "start",
 		Usage:       "Starts the Openlane compliance agent",
-		Description: startDescription,
+		Description: "Starts the Openlane compliance agent with the specified configuration. The agent will continuously run compliance checks according to their schedules and report results to the Openlane platform.",
 		Flags:       StartFlags,
 		Action:      StartAction, // StartAction will be refactored next if needed
 	},
@@ -79,5 +79,6 @@ func PrintMessageAndReturnExitCode(err error) int {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
+
 	return 0
 }

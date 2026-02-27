@@ -2,10 +2,17 @@ package retry
 
 import (
 	"context"
+	"math"
+	"math/rand"
 	"time"
 
 	"github.com/codeGROOVE-dev/retry"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	// Retry configuration defaults
+	defaultMaxDelaySeconds = 30
 )
 
 // Manager provides centralized retry functionality with configurable strategies
@@ -40,7 +47,7 @@ func NewManager(config Config) *Manager {
 	}
 
 	if config.MaxDelay == 0 {
-		config.MaxDelay = 30 * time.Second
+		config.MaxDelay = defaultMaxDelaySeconds * time.Second
 	}
 
 	if config.Strategy == "" {
@@ -73,12 +80,13 @@ func (m *Manager) executeWithContext(ctx context.Context, operation OperationWit
 	maxRetries := m.config.MaxAttempts
 	initialBackoff := m.config.InitialDelay
 	maxBackoff := m.config.MaxDelay
+	delayType := m.delayTypeForStrategy(initialBackoff, maxBackoff)
 
 	return retry.Do(func() error {
 		return operation(ctx)
 	},
 		retry.Attempts(maxRetries),
-		retry.DelayType(retry.FullJitterBackoffDelay),
+		retry.DelayType(delayType),
 		retry.Delay(initialBackoff),
 		retry.MaxDelay(maxBackoff),
 		retry.OnRetry(func(n uint, err error) {
@@ -94,13 +102,62 @@ func (m *Manager) ExecuteWithCustomRetry(operation Operation, maxRetries uint, i
 		return operation()
 	},
 		retry.Attempts(maxRetries),
-		retry.DelayType(retry.FullJitterBackoffDelay),
+		retry.DelayType(m.delayTypeForStrategy(initialBackoff, maxBackoff)),
 		retry.Delay(initialBackoff),
 		retry.MaxDelay(maxBackoff),
 		retry.OnRetry(func(n uint, err error) {
 			log.Warn().Uint("attempt", n+1).Uint("max_attempts", maxRetries).Err(err).Msg("Operation failed, retrying")
 		}),
 	)
+}
+
+func (m *Manager) delayTypeForStrategy(initialBackoff, maxBackoff time.Duration) retry.DelayTypeFunc {
+	strategy := m.config.Strategy
+	if strategy == "" {
+		strategy = "exponential"
+	}
+
+	multiplier := m.config.Multiplier
+	if multiplier <= 1.0 {
+		multiplier = 2.0
+	}
+
+	switch strategy {
+	case "linear":
+		return func(attempt uint, _ error, _ *retry.Config) time.Duration {
+			delay := time.Duration(float64(initialBackoff) * float64(attempt+1))
+			if delay > maxBackoff {
+				return maxBackoff
+			}
+
+			return delay
+		}
+	case "random":
+		return func(attempt uint, _ error, _ *retry.Config) time.Duration {
+			upperBound := time.Duration(float64(initialBackoff) * math.Pow(multiplier, float64(attempt+1)))
+			if upperBound > maxBackoff {
+				upperBound = maxBackoff
+			}
+
+			if upperBound <= initialBackoff {
+				return initialBackoff
+			}
+
+			jitterRange := float64(upperBound - initialBackoff)
+			return initialBackoff + time.Duration(rand.Float64()*jitterRange) //nolint:gosec
+		}
+	case "exponential":
+		fallthrough
+	default:
+		return func(attempt uint, _ error, _ *retry.Config) time.Duration {
+			delay := time.Duration(float64(initialBackoff) * math.Pow(multiplier, float64(attempt)))
+			if delay > maxBackoff {
+				return maxBackoff
+			}
+
+			return delay
+		}
+	}
 }
 
 // ExecuteWithCustomConfig executes an operation with custom retry configuration

@@ -39,7 +39,12 @@ func TestConfigValidation(t *testing.T) {
 						Args:          []string{"hello"},
 						Schedule:      "* * * * *",
 						Timeout:       1 * time.Minute,
-						Controls:      []string{"TEST:001"},
+						ComplianceStandards: []ComplianceStandard{
+							{
+								Standard: "test",
+								Controls: []string{"001"},
+							},
+						},
 						Tags:          []string{"test"},
 						Enabled:       true,
 						EvidencePaths: []string{"/tmp/evidence"},
@@ -142,7 +147,14 @@ func TestConfigValidation(t *testing.T) {
 				}
 			}()
 
-			err := ValidateConfig(tt.config)
+			// Use runtime validation for tests that expect check validation errors
+			var err error
+			if tt.name == "invalid check - missing name" || tt.name == "invalid check - missing command" || tt.name == "invalid cron schedule" {
+				err = ValidateConfigForRuntime(tt.config)
+			} else {
+				err = ValidateConfig(tt.config)
+			}
+			
 			if tt.expectErr && err == nil {
 				t.Errorf("expected error but got none")
 			}

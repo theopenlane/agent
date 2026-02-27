@@ -16,7 +16,7 @@ linters:
     - revive
     - staticcheck
     - whitespace
-    - wsl
+    - wsl_v5
   exclusions:
     generated: lax
     warn-unused: true

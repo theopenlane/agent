@@ -5,262 +5,101 @@
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=theopenlane_REPONAME&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=theopenlane_REPONAME)
 
 
-# agent
+# Openlane Agent
 
-## Evidence Collection
+Lightweight compliance agent that runs customer-defined checks, collects evidence, and reports results back to the Openlane platform. It supports connected, buffered, and standalone modes, executes both locally scheduled and remotely assigned jobs, and stores everything locally when connectivity is unavailable.
 
-### Configuration
+## Key Capabilities
+- Run local checks on cron schedules and optionally poll the platform for remote scheduled jobs.
+- Register as a JobRunner with Openlane, send heartbeats, and report JobResults (including findings and evidence uploads).
+- Buffer results/evidence to disk with automatic retry-based syncing when the API is reachable.
+- Validate controls against platform metadata (fail-open when validation fails) and map results to compliance standards.
+- Platform-aware check variants, pass/fail hooks, and evidence collection from files and command output.
+- CLI for starting/stopping the agent, running single checks, and initializing/validating configuration.
 
-Evidence collection is configured per check using the `evidence_paths` field:
 
-```yaml
-checks:
-  - name: "disk-encryption-check"
-    evidence_paths:
-      - "./evidence/disk-encryption/"    # Directory containing evidence files
-      - "./logs/encryption-audit.log"    # Specific file
-      - "/var/log/security.log"          # Absolute path
+## How the Agent Runs
+1. **CLI start** (`clicommand/agent_start.go`): load config, set logging, optionally daemonize, and build the core `Agent`.
+2. **Registration** (`core/agent.go`): unless in standalone mode, register as a JobRunner via the GraphQL client with hardware ID, host metadata, and tags.
+3. **Workers** (`core/agent_worker.go`):
+   - Spawn `cfg.spawn` workers, each with its own scheduler and retry manager.
+   - Heartbeat every 60s updates JobRunner status, version, IP, and last seen.
+   - Local scheduler scans due checks every 30s (simple 5-field cron parser).
+   - Optional remote polling uses JobRunner ID to fetch scheduled jobs (guarded by `enableRemotePoll`).
+   - Concurrency capped by `maxConcurrency`; active checks tracked per worker.
+4. **Check execution** (`core/compliance_check_controller.go`):
+   - Validate controls through the API (fail-open with reason logging) and apply platform variants (`internal/platform`).
+   - Execute commands with injected env (`OPENLANE_CHECK_NAME`, `OPENLANE_AGENT_ID`, `OPENLANE_CHECK_TIMEOUT`, `OPENLANE_CONTROLS`, `OPENLANE_TAGS`).
+   - Parse JSON output into findings/metrics/evidence metadata when present; status defaults to non-zero exit code = failure.
+   - Collect evidence from configured paths plus stdout/stderr snapshots; run pass/fail action commands; optionally update control status (placeholder).
+   - Store results through the storage layer.
+
+## Configuration
+- Default config file: `agent.yaml` (override with `--config`). Env overrides use the `OPENLANE_AGENT_` prefix and mirror keys (e.g., `OPENLANE_AGENT_APIURL`, `OPENLANE_AGENT_LOGLEVEL`).
+- Full schema lives in `schema/agent.config.json`; example config in `config/config.example.yaml` and `examples/agent.example.yaml`.
+- Key fields (see `config/config.go`):
+  - **API & identity:** `registrationToken`, `apiUrl`, `agentName`, `identity.*` (hardware ID detection/fallbacks).
+  - **Runtime:** `logLevel`, `dataDir`, `pollInterval`, `spawn`, `maxConcurrency`, `defaultTimeout`, `enableRemotePoll`.
+  - **Offline modes (`offline.mode`):**
+    - `normal` – online operation with API.
+    - `buffered` – online-first with disk buffering + retries (`offline.bufferDir`, `syncInterval`, `connectivityInterval`, `maxRetries`).
+    - `standalone` – skip registration/remote polling; still buffers locally.
+  - **Evidence:** toggle, retention period, max file size, compression flag.
+  - **Retry:** max attempts, initial/max delay, strategy, multiplier.
+  - **Checks:** `name`, `command`, `args`, `env`, `workDir`, `schedule` (5/6-field cron), `timeout`, `tags`, `continueOnError`.
+    - Compliance context: `complianceStandards[].standard` + `controls`.
+    - Evidence sources: `evidencePaths`.
+    - Platform variants: per-OS/arch overrides, includes/excludes regex, expected exit codes, remediation hints.
+    - Actions: `onPass`/`onFail` with `uploadEvidence`, `updateControlStatus`, and custom commands.
+- Validate configs via `./openlane-agent config validate --config agent.yaml`; initialize via `./openlane-agent config init --output agent.yaml [--force]`.
+
+### Result Payloads
+Checks emit a `schema.ComplianceCheckResult`:
+- Core fields: `checkName`, `standard`, `controlRef`, `status`, `exitCode`, `startedAt`, `finishedAt`, `log`, `error`, `metadata`.
+- Parsed output can add `findings`, `metrics`, and evidence hints into metadata. Raw stdout/stderr is preserved for troubleshooting.
+
+## Storage & Offline Behavior
+- `internal/storage` always buffers results/evidence to `offline.bufferDir` (default `./buffer`) with metadata and retry counts.
+- If API credentials are set, `APIStorage` immediately attempts to create JobResults and upload evidence; failures leave the buffered copy for retry.
+- Background sync (`syncInterval`) runs while connectivity checks pass; old buffer files pruned via `bufferRetentionPeriod`.
+- Evidence collection (`EvidenceService`) enforces max file size and can generate stdout/stderr artifacts; retention cleanup available.
+
+## Platform API Integration
+- GraphQL client (`api/graphql_client.go`) wraps `openlaneclient` with retry hooks:
+  - Register JobRunner (`RegisterAgent`) and expose JobRunner ID for polling/heartbeats.
+  - Sync JobTemplates per check (`SyncJobTemplates`), with a known upstream issue where IDs may be empty; logs warnings and skips scheduled job creation when missing.
+  - Create ScheduledJobs for manual/local runs when templates exist.
+  - Poll scheduled jobs for this runner (`PollForWork`) when enabled.
+  - Report JobResults (`ReportResults`) with optional result file uploads; evidence uploads (`CreateEvidence`) can be tied to controls and JobResult IDs.
+  - Control metadata: fetch/update controls and validate standards/controls before execution.
+  - Heartbeats: `UpdateAgentStatus` updates version, IP, last seen, and system info.
+- User agent string is `openlane-agent/<version>` from `internal/constants`.
+
+## CLI & Common Commands
+Build the binary and exercise the CLI:
+
+```bash
+go build -o openlane-agent ./main.go
+./openlane-agent config init --output agent.yaml
+./openlane-agent config validate --config agent.yaml
+./openlane-agent start --config agent.yaml --no-daemon --log-level debug
+./openlane-agent check <check-name> --config agent.yaml
+./openlane-agent stop --pid-file agent.pid
+./openlane-agent status --pid-file agent.pid
+./openlane-agent version
 ```
 
-### Automatic Evidence Creation
+Flags like `--api-url`, `--api-key`, `--max-concurrency`, `--data-dir`, and `--no-daemon` override config values at startup. Daemon mode writes a PID file (default `agent.pid`); foreground mode is recommended during development.
 
-The agent automatically creates evidence from:
-1. **Command Output**: `stdout` and `stderr` are saved as evidence files
-2. **Configured Paths**: Files and directories specified in `evidence_paths`
-3. **Script-Generated Files**: Scripts can create evidence files in `$OPENLANE_WORK_DIR/evidence/`
+## Development & Testing
+- Go modules: Go 1.25+ (`go.mod`).
+- Format/lint/test: `task go:fmt`, `task go:lint`, `task go:test` or `go test ./...`.
+- Build convenience: `task build`.
+- Config helpers: `task config:init`, `task config:validate`, `task config:show`.
+- Schema generation: `go generate ./schema` (runs `schema/generate_schemas.go` to refresh `schema/agent.config.json` and example files).
+- Sample scripts in `scripts/` exercise storage/connectivity and include a disk-encryption example check.
 
-### Evidence File Types
-
-Supported evidence file types:
-- Text files (`.txt`, `.log`)
-- JSON files (`.json`)
-- Configuration files (`.yaml`, `.yml`, `.xml`)
-- Images (`.png`, `.jpg`, `.jpeg`)
-- Documents (`.pdf`)
-- Scripts (`.sh`, `.py`, `.rb`)
-
-## Pass/Fail Status Determination
-
-The agent determines pass/fail status using the following logic:
-
-1. **Execution Error**: If the command fails to execute → FAIL
-2. **Exit Code**: Non-zero exit code → FAIL
-3. **Critical/High Findings**: Any finding with `critical` or `high` severity → FAIL
-4. **Otherwise**: PASS
-
-### Example Script Output
-
-Scripts should output JSON with findings:
-
-```json
-{
-  "findings": [
-    {
-      "resource": "disk",
-      "title": "FileVault Disabled",
-      "description": "Full disk encryption is not active",
-      "severity": "high",
-      "status": "open"
-    }
-  ],
-  "evidence": {
-    "evidence_directory": "/tmp/evidence/disk-check/1234567890",
-    "files_created": 3
-  },
-  "metrics": {
-    "execution_time_seconds": 15,
-    "passed": false
-  }
-}
-```
-
-## Pass/Fail Actions
-
-### Configuration
-
-Configure actions to execute on pass or fail outcomes:
-
-```yaml
-checks:
-  - name: "security-check"
-    on_pass:
-      upload_evidence: true
-      update_control_status: true
-      notifications:
-        - type: "slack"
-          enabled: true
-          config:
-            channel: "#security"
-            message: "✓ Security check passed"
-
-    on_fail:
-      upload_evidence: true
-      update_control_status: true
-      commands:
-        - name: "create-ticket"
-          command: "./scripts/create-ticket.sh"
-          args: ["--priority", "high"]
-          timeout: "1m"
-      notifications:
-        - type: "email"
-          enabled: true
-          config:
-            to: "security@company.com"
-            subject: "Security Check Failed"
-```
-
-### Available Actions
-
-#### Evidence Upload
-- `upload_evidence: true` - Uploads all collected evidence files to associated controls
-
-#### Control Status Update
-- `update_control_status: true` - Updates control compliance status in Openlane platform
-
-#### Command Execution
-Execute remediation or notification scripts:
-
-```yaml
-commands:
-  - name: "remediation-action"
-    command: "./scripts/fix-issue.sh"
-    args: ["--auto-fix"]
-    work_dir: "./remediation"
-    env: ["FIX_MODE=auto"]
-    timeout: "5m"
-    continue_on_error: true
-```
-
-#### Notifications
-Send notifications via multiple channels:
-
-```yaml
-notifications:
-  - type: "slack"
-    enabled: true
-    config:
-      channel: "#alerts"
-      message: "Check failed: {{.check_name}}"
-
-  - type: "email"
-    enabled: true
-    config:
-      to: "team@company.com"
-      subject: "Alert: {{.check_name}} failed"
-
-  - type: "webhook"
-    enabled: true
-    config:
-      url: "https://alerts.company.com/webhook"
-      method: "POST"
-```
-
-## Example: Disk Encryption Check
-
-Here's a complete example of a disk encryption compliance check:
-
-```yaml
-checks:
-  - name: "disk-encryption-check"
-    description: "Verify that full disk encryption is enabled"
-    command: "./scripts/check-disk-encryption.sh"
-    schedule: "0 6 * * *"  # Daily at 6 AM
-    timeout: 5m
-
-    controls:
-      - "SOC2:CC6.7"
-      - "ISO27001:A.10.1.1"
-      - "NIST:SC-28"
-
-    tags: ["encryption", "storage", "host-security"]
-    enabled: true
-
-    evidence_paths:
-      - "./evidence/disk-encryption-check/"
-
-    on_pass:
-      upload_evidence: true
-      update_control_status: true
-      notifications:
-        - type: "slack"
-          enabled: true
-          config:
-            channel: "#security"
-            message: "✓ Disk encryption verified"
-
-    on_fail:
-      upload_evidence: true
-      update_control_status: true
-      commands:
-        - name: "create-incident"
-          command: "./scripts/create-incident.sh"
-          args: ["--type", "encryption", "--severity", "high"]
-          timeout: "1m"
-      notifications:
-        - type: "email"
-          enabled: true
-          config:
-            to: "security-team@company.com"
-            subject: "CRITICAL: Disk encryption not enabled"
-```
-
-## Environment Variables
-
-Scripts have access to these environment variables:
-
-- `OPENLANE_CHECK_NAME` - Name of the executing check
-- `OPENLANE_AGENT_ID` - Agent identifier
-- `OPENLANE_CONTROLS` - Comma-separated list of associated controls
-- `OPENLANE_TAGS` - Comma-separated list of tags
-- `OPENLANE_WORK_DIR` - Working directory for evidence files
-- `OPENLANE_DATA_DIR` - Agent data directory
-
-## Evidence File Upload
-
-Evidence files are automatically uploaded to controls when:
-1. `upload_evidence: true` is configured in actions
-2. The check has associated `controls`
-3. Evidence files are successfully collected
-
-Each evidence file is uploaded with metadata:
-- Original file path
-- Content type
-- File size
-- SHA256 checksum
-- Upload timestamp
-- Check name and control associations
-
-## Security Considerations
-
-- Evidence files may contain sensitive information
-- Files are uploaded with appropriate access controls
-- Checksums verify file integrity
-- Evidence cleanup removes old files after configurable retention period
-- Action commands run with limited privileges
-
-## Troubleshooting
-
-### Evidence Collection Issues
-- Check file permissions on evidence paths
-- Verify evidence directory creation permissions
-- Review agent logs for collection errors
-
-### Upload Failures
-- Verify network connectivity to Openlane platform
-- Check authentication tokens
-- Review file size limits
-
-### Action Execution Problems
-- Verify script permissions and paths
-- Check timeout settings
-- Review environment variable requirements
-
-## Migration from Simple Schema
-
-To migrate existing checks to use the new features:
-
-1. Add `evidence_paths` for files to collect
-2. Configure `on_pass` and `on_fail` actions as needed
-3. Update scripts to create evidence in `$OPENLANE_WORK_DIR/evidence/`
-4. Test pass/fail logic with various scenarios
-5. Verify notification and command integrations
+## Notes & Operational Defaults
+- Heartbeat interval: 60s. Local scheduler scan: 30s. Placeholder cron when creating JobTemplates: `0 */30 * * * *` (server validation).
+- Control validation is fail-open unless the only referenced control is invalid, in which case the check is skipped with a failure result.
+- Buffered results live under `buffer/` by default; clean up after local runs as needed.

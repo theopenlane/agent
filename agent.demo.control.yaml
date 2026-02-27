@@ -1,0 +1,37 @@
+registrationToken: "tola_COp43qs1jnRIDVARkbXex5iddnNryP8z4mZo11Q5XLxCrNhwGmLVyOUpW0IYWYdX"
+apiUrl: "http://localhost:17608"
+agentName: "agent-control-demo"
+logLevel: "debug"
+dataDir: "./data-demo"
+pollInterval: "10s"
+spawn: 1
+maxConcurrency: 1
+defaultTimeout: "1m"
+enableRemotePoll: false
+
+offline:
+  mode: "buffered"
+  outputDir: "./results-demo"
+  bufferDir: "./buffer-demo"
+  syncInterval: "10s"
+
+evidence:
+  enabled: true
+  retentionPeriod: "24h"
+  maxFileSize: 10485760
+  compressFiles: false
+
+checks:
+  - name: "agent-control-demo-check"
+    description: "Demo check for control-linked evidence uploads"
+    command: "/bin/sh"
+    args:
+      - "-c"
+      - "echo '{\"findings\":[{\"resource\":\"demo-host\",\"title\":\"demo finding\",\"severity\":\"low\",\"status\":\"open\"}]}'"
+    schedule: "*/5 * * * * *"
+    timeout: "20s"
+    enabled: true
+    compliance_standards:
+      - standard: "01KJEWZDT09PCGXDG8EA2KHX9Z"
+        controls:
+          - "OLAGENT-DEMO-CONTROL-001"

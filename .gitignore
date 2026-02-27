@@ -4,3 +4,4 @@ agent
 .env
 .task
 .claude
+buffer

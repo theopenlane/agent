@@ -3,7 +3,9 @@ package connectivity
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -226,4 +228,83 @@ func (m *Manager) WaitForOnline(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// GetOutboundIP detects the preferred outbound IP address of this machine
+func GetOutboundIP(ctx context.Context) (string, error) {
+	// Connect to a well-known address to determine the preferred local IP
+	dialer := &net.Dialer{}
+
+	conn, err := dialer.DialContext(ctx, "udp", "8.8.8.8:80")
+	if err != nil {
+		return "", fmt.Errorf("failed to detect outbound IP: %w", err)
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+
+	return localAddr.IP.String(), nil
+}
+
+// GetLocalIPAddresses returns all local IP addresses (excluding loopback)
+func GetLocalIPAddresses() ([]string, error) {
+	var ips []string
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
+	}
+
+	for _, iface := range interfaces {
+		// Skip down interfaces and loopback
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Skip loopback and IPv6 addresses
+			if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+
+	return ips, nil
+}
+
+// GetPreferredIPAddress returns the preferred IP address for external communication
+func GetPreferredIPAddress(ctx context.Context) string {
+	// Try to get the outbound IP first
+	if ip, err := GetOutboundIP(ctx); err == nil {
+		return ip
+	}
+
+	// Fall back to first non-loopback local IP
+	if ips, err := GetLocalIPAddresses(); err == nil && len(ips) > 0 {
+		// Prefer 192.168.x.x or 10.x.x.x addresses for local networks
+		for _, ip := range ips {
+			if strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "10.") {
+				return ip
+			}
+		}
+		// Return first available IP if no preferred patterns found
+		return ips[0]
+	}
+
+	// Final fallback
+	return "127.0.0.1"
 }

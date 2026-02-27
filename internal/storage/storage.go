@@ -1,42 +1,20 @@
 package storage
 
 import (
-	"context"
 	"time"
 
 	"github.com/theopenlane/agent/config"
+	"github.com/theopenlane/agent/internal/models"
 )
-
-// EvidenceFile represents a file collected as evidence during a compliance check
-type EvidenceFile struct {
-	Path        string            `json:"path"`
-	Content     []byte            `json:"content,omitempty"`
-	Size        int64             `json:"size"`
-	Checksum    string            `json:"checksum"`
-	ContentType string            `json:"contentType"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"createdAt"`
-}
 
 // Result wraps a result with storage metadata for buffering
 type Result struct {
-	ID         string         `json:"id"`
-	Result     *config.Result `json:"result"`
-	BufferedAt time.Time      `json:"bufferedAt"`
-	RetryCount int            `json:"retryCount"`
-	LastError  string         `json:"lastError,omitempty"`
-	Evidence   []EvidenceFile `json:"evidence,omitempty"`
-}
-
-// Stats provides information about storage operations
-type Stats struct {
-	TotalResults       int64     `json:"totalResults"`
-	SuccessfulUploads  int64     `json:"successfulUploads"`
-	FailedUploads      int64     `json:"failedUploads"`
-	BufferedResults    int64     `json:"bufferedResults"`
-	EvidenceFiles      int64     `json:"evidenceFiles"`
-	LastSyncAttempt    time.Time `json:"lastSyncAttempt,omitempty"`
-	LastSuccessfulSync time.Time `json:"lastSuccessfulSync,omitempty"`
+	ID         string                `json:"id"`
+	Result     *config.Result        `json:"result"`
+	BufferedAt time.Time             `json:"bufferedAt"`
+	RetryCount int                   `json:"retryCount"`
+	LastError  string                `json:"lastError,omitempty"`
+	Evidence   []models.EvidenceFile `json:"evidence,omitempty"`
 }
 
 // Storage is the unified interface for storing compliance results and evidence
@@ -45,10 +23,7 @@ type Storage interface {
 	StoreResult(result *config.Result) error
 
 	// StoreResultWithEvidence stores a result along with collected evidence
-	StoreResultWithEvidence(result *config.Result, evidence []EvidenceFile) error
-
-	// GetStats returns storage statistics
-	GetStats() Stats
+	StoreResultWithEvidence(result *config.Result, evidence []models.EvidenceFile) error
 
 	// Health returns the current health status
 	Health() error
@@ -57,37 +32,20 @@ type Storage interface {
 	Close() error
 }
 
-// EvidenceCollector handles evidence file collection
-type EvidenceCollector interface {
-	// CollectEvidence collects evidence files from the specified paths
-	CollectEvidence(ctx context.Context, paths []string) ([]EvidenceFile, error)
-
-	// CreateEvidenceFromOutput creates evidence files from command output
-	CreateEvidenceFromOutput(ctx context.Context, checkName string, stdout, stderr []byte) ([]EvidenceFile, error)
-
-	// CleanupOldEvidence removes old evidence files based on retention policy
-	CleanupOldEvidence(ctx context.Context, retentionPeriod time.Duration) error
-}
-
 // Option configures storage behavior
 type Option func(*Config)
 
 // Config contains all storage configuration
 type Config struct {
-	// Mode determines the storage strategy
-	Mode Mode
-
 	// API configuration
 	APIURL            string
 	RegistrationToken string
 
-	// Local storage configuration
-	DataDir      string
-	OutputDir    string
-	OutputFormat string
+	// Storage directories
+	DataDir   string
+	BufferDir string
 
 	// Buffering configuration
-	BufferDir             string
 	MaxRetries            int
 	RetryBackoff          time.Duration
 	BufferRetentionPeriod time.Duration
@@ -97,54 +55,30 @@ type Config struct {
 	EvidenceEnabled         bool
 	EvidenceRetentionPeriod time.Duration
 	EvidenceMaxFileSize     int64
-	EvidenceCompressFiles   bool
 
 	// Connectivity configuration
 	ConnectivityCheckURL string
 	ConnectivityInterval time.Duration
+
+	// JobResult configuration
+	DefaultScheduledJobID string
+	OwnerID               string
+	AgentID               string
 }
-
-// Mode defines how storage operates
-type Mode string
-
-const (
-	// ModeAPI stores directly to the Openlane API
-	ModeAPI Mode = "api"
-
-	// ModeLocal stores to local files only
-	ModeLocal Mode = "local"
-
-	// ModeBuffered stores to API with local buffering fallback
-	ModeBuffered Mode = "buffered"
-)
 
 // Storage option constructors
 
-// WithAPIStorage configures direct API storage
-func WithAPIStorage(apiURL, token string) Option {
+// WithAPIConfig configures API connection
+func WithAPIConfig(apiURL, token string) Option {
 	return func(c *Config) {
-		c.Mode = ModeAPI
 		c.APIURL = apiURL
 		c.RegistrationToken = token
 	}
 }
 
-// WithLocalStorage configures local file storage
-func WithLocalStorage(dataDir, outputDir, format string) Option {
+// WithBuffering configures local buffering behavior
+func WithBuffering(bufferDir string) Option {
 	return func(c *Config) {
-		c.Mode = ModeLocal
-		c.DataDir = dataDir
-		c.OutputDir = outputDir
-		c.OutputFormat = format
-	}
-}
-
-// WithBufferedStorage configures API storage with local buffering fallback
-func WithBufferedStorage(apiURL, token, bufferDir string) Option {
-	return func(c *Config) {
-		c.Mode = ModeBuffered
-		c.APIURL = apiURL
-		c.RegistrationToken = token
 		c.BufferDir = bufferDir
 		c.MaxRetries = 5 // nolint:mnd
 		c.RetryBackoff = time.Minute
@@ -154,12 +88,11 @@ func WithBufferedStorage(apiURL, token, bufferDir string) Option {
 }
 
 // WithEvidence enables evidence collection
-func WithEvidence(enabled bool, retentionPeriod time.Duration, maxFileSize int64, compress bool) Option {
+func WithEvidence(enabled bool, retentionPeriod time.Duration, maxFileSize int64) Option {
 	return func(c *Config) {
 		c.EvidenceEnabled = enabled
 		c.EvidenceRetentionPeriod = retentionPeriod
 		c.EvidenceMaxFileSize = maxFileSize
-		c.EvidenceCompressFiles = compress
 	}
 }
 
@@ -171,7 +104,7 @@ func WithConnectivityMonitoring(checkURL string, interval time.Duration) Option 
 	}
 }
 
-// WithRetryPolicy configures retry behavior for buffered mode
+// WithRetryPolicy configures retry behavior
 func WithRetryPolicy(maxRetries int, backoff time.Duration) Option {
 	return func(c *Config) {
 		c.MaxRetries = maxRetries
@@ -179,27 +112,30 @@ func WithRetryPolicy(maxRetries int, backoff time.Duration) Option {
 	}
 }
 
-// NewStorage creates a new storage instance based on the provided options
+// WithJobResultConfig configures JobResult creation
+func WithJobResultConfig(scheduledJobID, ownerID, agentID string) Option {
+	return func(c *Config) {
+		c.DefaultScheduledJobID = scheduledJobID
+		c.OwnerID = ownerID
+		c.AgentID = agentID
+	}
+}
+
+// NewStorage creates a new storage instance
 func NewStorage(opts ...Option) (Storage, error) {
 	config := &Config{
-		Mode:         ModeLocal, // Default to local storage
-		DataDir:      "./data",
-		OutputDir:    "./results",
-		OutputFormat: "json",
+		DataDir:   "./data",
+		BufferDir: "./buffer",
+		// Default buffering configuration
+		MaxRetries:            5, // nolint:mnd
+		RetryBackoff:          time.Minute,
+		BufferRetentionPeriod: 7 * 24 * time.Hour, // nolint:mnd
+		SyncInterval:          5 * time.Minute,    // nolint:mnd
 	}
 
 	for _, opt := range opts {
 		opt(config)
 	}
 
-	switch config.Mode {
-	case ModeAPI:
-		return NewAPIStorage(config)
-	case ModeLocal:
-		return NewLocalStorage(config)
-	case ModeBuffered:
-		return NewBufferedStorage(config)
-	default:
-		return NewLocalStorage(config)
-	}
+	return NewBufferedStorage(config)
 }

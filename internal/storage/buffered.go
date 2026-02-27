@@ -14,6 +14,7 @@ import (
 
 	"github.com/theopenlane/agent/config"
 	"github.com/theopenlane/agent/internal/connectivity"
+	"github.com/theopenlane/agent/internal/models"
 )
 
 // BufferedStorage implements Storage interface with API storage and local buffering fallback
@@ -21,7 +22,6 @@ type BufferedStorage struct {
 	config          *Config
 	apiStorage      *APIStorage
 	connectivityMgr *connectivity.Manager
-	stats           Stats
 	mu              sync.RWMutex
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -31,19 +31,32 @@ type BufferedStorage struct {
 
 // NewBufferedStorage creates a new buffered storage instance
 func NewBufferedStorage(cfg *Config) (*BufferedStorage, error) {
-	// Create API storage
-	apiStorage, err := NewAPIStorage(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create API storage: %w", err)
-	}
-
 	// Ensure buffer directory exists
-	if err := os.MkdirAll(cfg.BufferDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.BufferDir, config.DefaultDirectoryPermissions); err != nil {
 		return nil, fmt.Errorf("failed to create buffer directory %s: %w", cfg.BufferDir, err)
 	}
 
+	// Create API storage (optional - can be nil for standalone mode)
+	var apiStorage *APIStorage
+
+	if cfg.RegistrationToken != "" {
+		var err error
+
+		apiStorage, err = NewAPIStorage(cfg)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to create API storage, will operate in local-only mode")
+
+			apiStorage = nil
+		}
+	}
+
 	// Create connectivity manager
-	connectivityMgr := connectivity.NewManager(cfg.ConnectivityCheckURL)
+	connectivityURL := cfg.ConnectivityCheckURL
+	if connectivityURL == "" && cfg.APIURL != "" {
+		connectivityURL = cfg.APIURL
+	}
+
+	connectivityMgr := connectivity.NewManager(connectivityURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -51,7 +64,6 @@ func NewBufferedStorage(cfg *Config) (*BufferedStorage, error) {
 		config:          cfg,
 		apiStorage:      apiStorage,
 		connectivityMgr: connectivityMgr,
-		stats:           Stats{},
 		ctx:             ctx,
 		cancel:          cancel,
 		stopCh:          make(chan struct{}),
@@ -68,8 +80,10 @@ func NewBufferedStorage(cfg *Config) (*BufferedStorage, error) {
 
 // start initializes background services
 func (bs *BufferedStorage) start() error {
-	// Start connectivity monitoring
-	bs.connectivityMgr.StartMonitoring(bs.ctx, bs.config.ConnectivityInterval)
+	// Start connectivity monitoring only if API storage exists and interval is positive
+	if bs.apiStorage != nil && bs.config.ConnectivityInterval > 0 {
+		go bs.connectivityMgr.StartMonitoring(bs.ctx, bs.config.ConnectivityInterval)
+	}
 
 	// Start sync routine
 	bs.syncTicker = time.NewTicker(bs.config.SyncInterval)
@@ -85,35 +99,33 @@ func (bs *BufferedStorage) StoreResult(result *config.Result) error {
 	return bs.StoreResultWithEvidence(result, nil)
 }
 
-// StoreResultWithEvidence stores a result with evidence, using API or buffering as fallback
-func (bs *BufferedStorage) StoreResultWithEvidence(result *config.Result, evidence []EvidenceFile) error {
+// StoreResultWithEvidence stores a result with evidence, always buffering to disk first
+// then optionally syncing to API if available
+func (bs *BufferedStorage) StoreResultWithEvidence(result *config.Result, evidence []models.EvidenceFile) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
-	// Try API storage first if connected
-	if bs.connectivityMgr.IsOnline() {
-		if err := bs.apiStorage.StoreResultWithEvidence(result, evidence); err != nil {
-			log.Warn().Err(err).Str("check", result.CheckName).Msg("API storage failed, falling back to buffer")
-
-			// API failed, buffer the result
-			return bs.bufferResult(result, evidence, err.Error())
-		}
-
-		// API success
-		bs.stats.TotalResults++
-		bs.stats.SuccessfulUploads++
-
-		return nil
+	// ALWAYS buffer to disk first (unified behavior for all modes)
+	bufferPath, err := bs.bufferResult(result, evidence, "")
+	if err != nil {
+		return fmt.Errorf("failed to buffer result: %w", err)
 	}
 
-	// No connectivity, buffer immediately
-	log.Debug().Str("check", result.CheckName).Msg("No API connectivity, buffering result")
+	// If API storage is available, try immediate sync (unless we know we're offline)
+	if bs.apiStorage != nil && !bs.connectivityMgr.IsOffline() {
+		if err := bs.apiStorage.StoreResultWithEvidence(result, evidence); err != nil {
+			log.Warn().Err(err).Str("check", result.CheckName).Msg("Immediate API sync failed, will retry later")
+			// Non-fatal - result is buffered and will be synced later
+		} else if removeErr := os.Remove(bufferPath); removeErr != nil {
+			log.Warn().Err(removeErr).Str("file", bufferPath).Msg("Immediate API sync succeeded but failed to remove buffer file")
+		}
+	}
 
-	return bs.bufferResult(result, evidence, "No API connectivity")
+	return nil
 }
 
 // bufferResult stores a result to local buffer
-func (bs *BufferedStorage) bufferResult(result *config.Result, evidence []EvidenceFile, reason string) error {
+func (bs *BufferedStorage) bufferResult(result *config.Result, evidence []models.EvidenceFile, reason string) (string, error) {
 	// Create buffered result
 	bufferedResult := &Result{
 		ID:         uuid.New().String(),
@@ -127,7 +139,7 @@ func (bs *BufferedStorage) bufferResult(result *config.Result, evidence []Eviden
 	// Serialize to JSON
 	data, err := json.MarshalIndent(bufferedResult, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal buffered result: %w", err)
+		return "", fmt.Errorf("failed to marshal buffered result: %w", err)
 	}
 
 	// Write to buffer file
@@ -135,15 +147,12 @@ func (bs *BufferedStorage) bufferResult(result *config.Result, evidence []Eviden
 	filepath := filepath.Join(bs.config.BufferDir, filename)
 
 	if err := os.WriteFile(filepath, data, 0o600); err != nil { // nolint:mnd
-		return fmt.Errorf("failed to write buffer file %s: %w", filepath, err)
+		return "", fmt.Errorf("failed to write buffer file %s: %w", filepath, err)
 	}
-
-	bs.stats.TotalResults++
-	bs.stats.BufferedResults++
 
 	log.Info().Str("check", result.CheckName).Str("buffer_id", bufferedResult.ID).Str("reason", reason).Msg("Result buffered locally")
 
-	return nil
+	return filepath, nil
 }
 
 // syncLoop runs the background synchronization process
@@ -169,8 +178,6 @@ func (bs *BufferedStorage) syncBufferedResults() {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
-	bs.stats.LastSyncAttempt = time.Now()
-
 	// Get all buffered files
 	files, err := filepath.Glob(filepath.Join(bs.config.BufferDir, "*.json"))
 	if err != nil {
@@ -193,8 +200,6 @@ func (bs *BufferedStorage) syncBufferedResults() {
 	}
 
 	if successCount > 0 {
-		bs.stats.LastSuccessfulSync = time.Now()
-
 		log.Info().Int("synced", successCount).Int("total", len(files)).Msg("Buffered results sync completed")
 	}
 
@@ -204,6 +209,11 @@ func (bs *BufferedStorage) syncBufferedResults() {
 
 // syncBufferedFile attempts to sync a single buffered file
 func (bs *BufferedStorage) syncBufferedFile(filepath string) bool {
+	// Skip if no API storage available (standalone mode)
+	if bs.apiStorage == nil {
+		return false
+	}
+
 	// Read buffered result
 	data, err := os.ReadFile(filepath)
 	if err != nil {
@@ -249,9 +259,6 @@ func (bs *BufferedStorage) syncBufferedFile(filepath string) bool {
 		log.Error().Err(err).Str("file", filepath).Msg("Failed to remove synced buffer file")
 	}
 
-	bs.stats.SuccessfulUploads++
-	bs.stats.BufferedResults--
-
 	log.Debug().Str("id", bufferedResult.ID).Str("check", bufferedResult.Result.CheckName).Msg("Buffered result synced successfully")
 
 	return true
@@ -279,52 +286,31 @@ func (bs *BufferedStorage) cleanupOldBufferFiles() {
 		if info.ModTime().Before(cutoff) {
 			if err := os.Remove(file); err != nil {
 				log.Error().Err(err).Str("file", file).Msg("Failed to remove old buffer file")
-			} else {
-				log.Debug().Str("file", file).Msg("Removed old buffer file")
-
-				bs.stats.BufferedResults--
 			}
 		}
-	}
-}
-
-// GetStats returns combined storage statistics
-func (bs *BufferedStorage) GetStats() Stats {
-	bs.mu.RLock()
-	defer bs.mu.RUnlock()
-
-	// Combine API stats with buffer stats
-	apiStats := bs.apiStorage.GetStats()
-
-	return Stats{
-		TotalResults:       bs.stats.TotalResults,
-		SuccessfulUploads:  bs.stats.SuccessfulUploads + apiStats.SuccessfulUploads,
-		FailedUploads:      bs.stats.FailedUploads + apiStats.FailedUploads,
-		BufferedResults:    bs.stats.BufferedResults,
-		EvidenceFiles:      bs.stats.EvidenceFiles + apiStats.EvidenceFiles,
-		LastSyncAttempt:    bs.stats.LastSyncAttempt,
-		LastSuccessfulSync: bs.stats.LastSuccessfulSync,
 	}
 }
 
 // Health returns the current health status
 func (bs *BufferedStorage) Health() error {
 	// Check buffer directory
-	if err := os.MkdirAll(bs.config.BufferDir, 0o755); err != nil {
+	if err := os.MkdirAll(bs.config.BufferDir, config.DefaultDirectoryPermissions); err != nil {
 		return fmt.Errorf("buffer directory not accessible: %w", err)
 	}
 
 	// Test buffer directory writability
 	testFile := filepath.Join(bs.config.BufferDir, ".health_check")
-	if err := os.WriteFile(testFile, []byte("test"), 0o600); err != nil {
+	if err := os.WriteFile(testFile, []byte("test"), config.RestrictedFilePermissions); err != nil {
 		return fmt.Errorf("buffer directory not writable: %w", err)
 	}
 
 	os.Remove(testFile)
 
-	// Check API health (non-fatal if failing)
-	if err := bs.apiStorage.Health(); err != nil {
-		log.Warn().Err(err).Msg("API health check failed (buffering will be used)")
+	// Check API health (non-fatal if failing, and may not exist in standalone mode)
+	if bs.apiStorage != nil {
+		if err := bs.apiStorage.Health(); err != nil {
+			log.Warn().Err(err).Msg("API health check failed (buffering will be used)")
+		}
 	}
 
 	return nil
