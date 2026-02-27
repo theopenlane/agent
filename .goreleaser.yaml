@@ -5,7 +5,7 @@ builds:
   # Linux amd64
   # ------------------------
   - id: linux-amd64
-    main: ./cmd/cli
+    main: .
     binary: openlane-agent
     goos:
       - linux
@@ -17,57 +17,45 @@ builds:
       - -trimpath
     ldflags:
       - "-s -w"
-      - "-X main.Version={{ .Env.VERSION }}"
-      - "-X main.Commit={{ .Env.COMMIT }}"
-      - "-X main.CommitDate={{ .Env.COMMIT_DATE }}"
-      - "-X main.TreeState={{ .Env.TREE_STATE }}"
-      - "-X github.com/theopenlane/agent/internal/constants.CLIVersion={{ .Env.VERSION }}"
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
   # ------------------------
   # Darwin amd64
   # ------------------------
   - id: darwin-amd64
-    main: ./cmd/cli
+    main: .
     binary: openlane-agent
     goos:
       - darwin
     goarch:
       - amd64
     env:
-      - CGO_ENABLED=1
+      - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - "-X main.Version={{ .Env.VERSION }}"
-      - "-X main.Commit={{ .Env.COMMIT }}"
-      - "-X main.CommitDate={{ .Env.COMMIT_DATE }}"
-      - "-X main.TreeState={{ .Env.TREE_STATE }}"
-      - "-X github.com/theopenlane/agent/internal/constants.CLIVersion={{ .Env.VERSION }}"
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
 
   # ------------------------
   # Darwin arm64
   # ------------------------
   - id: darwin-arm64
-    main: ./cmd/cli
+    main: .
     binary: openlane-agent
     goos:
       - darwin
     goarch:
       - arm64
     env:
-      - CGO_ENABLED=1
+      - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - "-X main.Version={{ .Env.VERSION }}"
-      - "-X main.Commit={{ .Env.COMMIT }}"
-      - "-X main.CommitDate={{ .Env.COMMIT_DATE }}"
-      - "-X main.TreeState={{ .Env.TREE_STATE }}"
-      - "-X github.com/theopenlane/agent/internal/constants.CLIVersion={{ .Env.VERSION }}"
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
   # ------------------------
   # Linux arm64
   # ------------------------
   - id: linux-arm64
-    main: ./cmd/cli
+    main: .
     binary: openlane-agent
     goos:
       - linux
@@ -80,11 +68,7 @@ builds:
       - -tags=netgo
     ldflags:
       - "-s -w"
-      - "-X main.Version={{ .Env.VERSION }}"
-      - "-X main.Commit={{ .Env.COMMIT }}"
-      - "-X main.CommitDate={{ .Env.COMMIT_DATE }}"
-      - "-X main.TreeState={{ .Env.TREE_STATE }}"
-      - "-X github.com/theopenlane/agent/internal/constants.CLIVersion={{ .Env.VERSION }}"
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
 archives:
   - formats: ['tar.gz'] # we can use binary, but it seems there's an issue where goreleaser skips the sboms
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -108,11 +92,12 @@ signs:
   - cmd: cosign
     args:
       - "sign-blob"
-      - "--output-signature=${signature}"
+      - "--bundle=${signature}"
       - "${artifact}"
       - "--yes" # needed on cosign >= 2.0.0
     artifacts: archive
     output: true
+    signature: "${artifact}.sigstore.json"
 homebrew_casks:
   - homepage: 'https://github.com/theopenlane/agent'
     description: 'openlane-agent is a remote processing agent for executing Openlane continuous compliance tasks'

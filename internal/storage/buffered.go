@@ -39,7 +39,7 @@ func NewBufferedStorage(cfg *Config) (*BufferedStorage, error) {
 	// Create API storage (optional - can be nil for standalone mode)
 	var apiStorage *APIStorage
 
-	if cfg.RegistrationToken != "" {
+	if cfg.APIToken != "" {
 		var err error
 
 		apiStorage, err = NewAPIStorage(cfg)
@@ -258,8 +258,6 @@ func (bs *BufferedStorage) syncBufferedFile(filepath string) bool {
 	if err := os.Remove(filepath); err != nil {
 		log.Error().Err(err).Str("file", filepath).Msg("Failed to remove synced buffer file")
 	}
-
-	log.Debug().Str("id", bufferedResult.ID).Str("check", bufferedResult.Result.CheckName).Msg("Buffered result synced successfully")
 
 	return true
 }

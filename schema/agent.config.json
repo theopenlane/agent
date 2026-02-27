@@ -69,10 +69,6 @@
         "commands": {
           "$ref": "#/$defs/[]config.ActionCommand",
           "description": "Commands to execute"
-        },
-        "updateControlStatus": {
-          "type": "boolean",
-          "description": "Control status updates"
         }
       },
       "additionalProperties": false,
@@ -109,7 +105,7 @@
         "timeout": {
           "type": "integer"
         },
-        "compliance_standards": {
+        "complianceStandards": {
           "$ref": "#/$defs/[]config.ComplianceStandard",
           "description": "Compliance context"
         },
@@ -294,7 +290,7 @@
     }
   },
   "properties": {
-    "registrationToken": {
+    "token": {
       "type": "string",
       "description": "API connection settings"
     },

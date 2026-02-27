@@ -64,11 +64,9 @@ checks:
     
     onPass:
       uploadEvidence: true
-      updateControlStatus: true
     
     onFail:
       uploadEvidence: true
-      updateControlStatus: true
       commands:
         - name: "log_encryption_failure"
           command: "logger"
@@ -252,7 +250,6 @@ checks:
     
     onFail:
       uploadEvidence: false  # Don't upload firewall logs for security
-      updateControlStatus: true
 
   # Cross-platform check example (works on all platforms)
   - name: "hostname_configured"

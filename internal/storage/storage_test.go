@@ -15,5 +15,5 @@ func TestStorageConfiguration(t *testing.T) {
 	_, err = NewAPIStorage(&Config{
 		APIURL: "https://api.example.com",
 	})
-	assert.ErrorIs(t, err, ErrRegistrationTokenRequired)
+	assert.ErrorIs(t, err, ErrAPITokenRequired)
 }

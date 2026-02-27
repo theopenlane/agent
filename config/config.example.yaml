@@ -1,76 +1,69 @@
-agentName: production-compliance-agent
+token: ${OPENLANE_AGENT_TOKEN}
 apiUrl: https://api.theopenlane.io
-checks:
-    - command: ./scripts/check-disk-encryption.sh
-      complianceStandards:
-        - controls:
-            - CC6.7
-          standard: soc2v2022
-        - controls:
-            - A.10.1.1
-          standard: iso27001v2022
-        - controls:
-            - SC-28
-          standard: nist80053v5
-      continueOnError: false
-      description: Verify that full disk encryption is enabled on the system
-      enabled: true
-      env:
-        - ENCRYPTION_POLICY=required
-      evidencePaths:
-        - ./evidence/disk-encryption-check/
-      name: disk-encryption-check
-      onFail:
-        commands:
-            - args:
-                - --type
-                - encryption
-                - --severity
-                - high
-              command: ./scripts/create-incident.sh
-              continueOnError: false
-              name: create-security-incident
-              timeout: 60000000000
-        updateControlStatus: true
-        uploadEvidence: true
-      onPass:
-        updateControlStatus: true
-        uploadEvidence: true
-      schedule: 0 6 * * *
-      tags:
-        - encryption
-        - storage
-        - host-security
-      timeout: 300000000000
-dataDir: ./data
-defaultTimeout: 300000000000
-evidence:
-    compressFiles: false
-    enabled: true
-    maxFileSize: 104857600
-    retentionPeriod: 2592000000000000
-identity:
-    cacheTimeout: 86400000000000
-    enabled: true
-    fallbackToHostname: true
+agentName: production-compliance-agent
 logLevel: info
-maxConcurrency: 3
-offline:
-    bufferDir: ./buffer
-    bufferRetentionPeriod: 0
-    connectivityCheckUrl: ""
-    connectivityInterval: 30000000000
-    maxRetries: 5
-    mode: normal
-    outputDir: ./results
-    outputFormat: json
-    syncInterval: 300000000000
-pollInterval: 60000000000
-registrationToken: ${OPENLANE_AGENT_REGISTRATIONTOKEN}
-retry:
-    initialDelay: 1000000000
-    maxAttempts: 5
-    maxDelay: 30000000000
-    multiplier: 2
-    strategy: exponential
+dataDir: ./data
+pollInterval: 1m
 spawn: 1
+maxConcurrency: 3
+defaultTimeout: 5m
+
+evidence:
+  enabled: true
+  retentionPeriod: 720h
+  maxFileSize: 104857600
+  compressFiles: false
+
+offline:
+  mode: buffered
+  outputDir: ./results
+  outputFormat: json
+  bufferDir: ./buffer
+  connectivityCheckUrl: ""
+  connectivityInterval: 30s
+  syncInterval: 5m
+  maxRetries: 5
+  bufferRetentionPeriod: 168h
+
+retry:
+  maxAttempts: 5
+  initialDelay: 1s
+  maxDelay: 30s
+  strategy: exponential
+  multiplier: 2
+
+checks:
+  - name: disk-encryption-check
+    description: Verify that full disk encryption is enabled on the system
+    command: ./scripts/check-disk-encryption.sh
+    schedule: "0 6 * * *"
+    timeout: 5m
+    env:
+      - ENCRYPTION_POLICY=required
+    complianceStandards:
+      - standard: soc2v2022
+        controls:
+          - CC6.7
+      - standard: iso27001v2022
+        controls:
+          - A.10.1.1
+    tags:
+      - encryption
+      - storage
+      - host-security
+    enabled: true
+    evidencePaths:
+      - ./evidence/disk-encryption-check/
+    onPass:
+      uploadEvidence: true
+    onFail:
+      uploadEvidence: true
+      commands:
+        - name: create-security-incident
+          command: ./scripts/create-incident.sh
+          args:
+            - --type
+            - encryption
+            - --severity
+            - high
+          timeout: 1m

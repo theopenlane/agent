@@ -1,73 +1,37 @@
-registrationToken: tola_aAj2v7WjgJ3SZX7jJXMcOMrjjMj0rdHN5IOWMShvCPs3cIkvWnoBoRF0tA8l57pb
+token: ${OPENLANE_AGENT_TOKEN}
 apiUrl: http://localhost:17608
-agentName: production-compliance-agent
-logLevel: debug
+agentName: openlane-agent
+logLevel: info
 dataDir: ./data
-pollInterval: 1m0s
+pollInterval: 1m
 spawn: 1
 maxConcurrency: 3
-defaultTimeout: 5m0s
+defaultTimeout: 5m
+
 offline:
   mode: buffered
   outputDir: ./results
   bufferDir: ./buffer
+  syncInterval: 30s
+
+evidence:
+  enabled: true
+  retentionPeriod: 24h
+  maxFileSize: 10485760
+  compressFiles: false
+
 checks:
-    - name: test-check
-      description: Simple test check that runs immediately
-      command: echo
-      args:
-        - "Test check executed successfully"
-      schedule: "*/1 * * * *"
-      timeout: 30s
-      compliance_standards:
-        - standard: soc2v2022
-          controls:
-            - TEST.001
-      tags:
-        - test
-      enabled: true
-    - name: aws-iam-compliance
-      description: Check AWS IAM configuration for compliance issues
-      command: ./scripts/check-aws-iam.sh
-      env:
-        - AWS_REGION=us-east-1
-      schedule: 0 */4 * * *
-      timeout: 10m0s
-      compliance_standards:
-        - standard: soc2v2022
-          controls:
-            - CC6.1
-        - standard: iso27001v2022
-          controls:
-            - A.9.2.1
-    - name: github-audit
-      description: Audit GitHub organization settings
-      command: python3
-      args:
-        - ./scripts/github-audit.py
-        - --org
-        - mycompany
-      env:
-        - GITHUB_TOKEN=${GITHUB_TOKEN}
-      schedule: 0 0 * * *
-      timeout: 5m0s
-      compliance_standards:
-        - standard: soc2v2022
-          controls:
-            - CC6.3
-      tags:
-        - github
-        - access-control
-      enabled: true
-      continue_on_error: false
-    - name: database-compliance
-      description: Check database security settings
-      command: ./scripts/check-database.sh
-      schedule: '*/30 * * * *'
-      timeout: 2m0s
-      compliance_standards:
-        - standard: pcidss4
-          controls:
-            - "8.2"
-      enabled: true
-      continue_on_error: false
+  - name: test-check
+    description: Simple test check that runs every minute
+    command: /bin/echo
+    args:
+      - Test check executed successfully
+    schedule: "*/1 * * * *"
+    timeout: 30s
+    complianceStandards:
+      - standard: soc2v2022
+        controls:
+          - TEST.001
+    tags:
+      - test
+    enabled: true

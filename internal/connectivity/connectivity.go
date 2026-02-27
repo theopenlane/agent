@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,10 @@ const (
 	StatusOnline
 	// StatusOffline represents offline connectivity status
 	StatusOffline
+)
+
+const (
+	defaultProbePath = "/livez"
 )
 
 // Manager manages connectivity checking and status
@@ -53,33 +58,72 @@ func (m *Manager) Check(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, m.checkTimeout)
 	defer cancel()
 
-	// Create a simple health check request
-	req, err := http.NewRequestWithContext(ctx, "GET", m.apiURL+"/health", nil)
+	targets, err := m.probeTargets()
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		m.setStatus(StatusOffline, err)
+
+		return err
 	}
 
 	client := &http.Client{
 		Timeout: m.checkTimeout,
 	}
 
-	resp, err := client.Do(req)
+	var lastErr error
+	for _, target := range targets {
+		req, reqErr := http.NewRequestWithContext(ctx, "GET", target, nil)
+		if reqErr != nil {
+			lastErr = fmt.Errorf("failed to create request: %w", reqErr)
+			continue
+		}
+
+		resp, requestErr := client.Do(req)
+		if requestErr != nil {
+			lastErr = requestErr
+			continue
+		}
+
+		resp.Body.Close()
+
+		if resp.StatusCode < 500 { // nolint:mnd
+			m.setStatus(StatusOnline, nil)
+			return nil
+		}
+
+		lastErr = fmt.Errorf("%w: %d", ErrAPIUnsuccessfulStatusCode, resp.StatusCode)
+	}
+
+	if lastErr == nil {
+		lastErr = ErrAPIUnsuccessfulStatusCode
+	}
+
+	m.setStatus(StatusOffline, lastErr)
+
+	return lastErr
+}
+
+func (m *Manager) probeTargets() ([]string, error) {
+	apiURL := strings.TrimSpace(m.apiURL)
+	if apiURL == "" {
+		return nil, fmt.Errorf("api url is required")
+	}
+
+	parsed, err := url.Parse(apiURL)
 	if err != nil {
-		m.setStatus(StatusOffline, err)
-		return err
-	}
-	defer resp.Body.Close()
-
-	// Consider any successful response as online
-	if resp.StatusCode < 500 { // nolint:mnd
-		m.setStatus(StatusOnline, nil)
-		return nil
+		return nil, fmt.Errorf("invalid api url %q: %w", apiURL, err)
 	}
 
-	err = fmt.Errorf("%w: %d", ErrAPIUnsuccessfulStatusCode, resp.StatusCode)
-	m.setStatus(StatusOffline, err)
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid api url %q", apiURL)
+	}
 
-	return err
+	// If the URL already includes an explicit endpoint path, use it as-is.
+	if strings.TrimSpace(parsed.Path) != "" && parsed.Path != "/" {
+		return []string{parsed.String()}, nil
+	}
+
+	baseURL := strings.TrimRight(parsed.String(), "/")
+	return []string{baseURL + defaultProbePath}, nil
 }
 
 // GetStatus returns the current connectivity status
@@ -102,16 +146,48 @@ func (m *Manager) IsOffline() bool {
 
 // Subscribe returns a channel that receives status updates
 func (m *Manager) Subscribe() <-chan Status {
+	ch, _ := m.subscribe()
+	return ch
+}
+
+// SubscribeWithCancel returns a status channel and cancellation function
+func (m *Manager) SubscribeWithCancel() (<-chan Status, func()) {
+	ch, cancel := m.subscribe()
+	return ch, cancel
+}
+
+func (m *Manager) subscribe() (chan Status, func()) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	ch := make(chan Status, 1)
 	m.listeners = append(m.listeners, ch)
+	currentStatus := m.status
+
+	m.mu.Unlock()
 
 	// Send current status immediately
-	ch <- m.status
+	ch <- currentStatus
 
-	return ch
+	return ch, func() {
+		m.unsubscribe(ch)
+	}
+}
+
+func (m *Manager) unsubscribe(ch chan Status) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i, listener := range m.listeners {
+		if listener != ch {
+			continue
+		}
+
+		m.listeners = append(m.listeners[:i], m.listeners[i+1:]...)
+
+		close(listener)
+
+		return
+	}
 }
 
 // StartMonitoring starts periodic connectivity checks
@@ -216,7 +292,8 @@ func (m *Manager) WaitForOnline(ctx context.Context) error {
 		return nil
 	}
 
-	ch := m.Subscribe()
+	ch, unsubscribe := m.SubscribeWithCancel()
+	defer unsubscribe()
 
 	for {
 		select {

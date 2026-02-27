@@ -20,11 +20,16 @@ type Scheduler struct {
 
 // ScheduledCheck wraps a Check with scheduling information
 type ScheduledCheck struct {
-	Check    *config.Check
-	NextRun  time.Time
-	LastRun  time.Time
+	// Check is the compliance check configuration
+	Check *config.Check
+	// NextRun is the time at which the check is next scheduled to execute
+	NextRun time.Time
+	// LastRun is the time the check most recently completed
+	LastRun time.Time
+	// RunCount is the total number of times this check has been executed
 	RunCount int64
-	Running  bool
+	// Running indicates whether the check is currently executing
+	Running bool
 }
 
 // NewScheduler creates a new scheduler
@@ -72,11 +77,13 @@ func (s *Scheduler) GetDueChecks() []*config.Check {
 	var dueChecks []*config.Check
 
 	s.mu.RLock()
+
 	for _, scheduled := range s.checks {
 		if !scheduled.Running && (now.After(scheduled.NextRun) || now.Equal(scheduled.NextRun)) {
 			dueChecks = append(dueChecks, scheduled.Check)
 		}
 	}
+
 	s.mu.RUnlock()
 
 	return dueChecks

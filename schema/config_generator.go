@@ -129,29 +129,29 @@ func generateYAMLConfig(yamlConfigPath string) error {
 	yamlConfig := make(map[string]any)
 
 	// Set example values manually since we can't import config
-	yamlConfig["registration_token"] = "${OPENLANE_AGENT_REGISTRATIONTOKEN}"
-	yamlConfig["api_url"] = "https://api.theopenlane.io"
-	yamlConfig["agent_name"] = "production-compliance-agent"
-	yamlConfig["log_level"] = "info"
-	yamlConfig["data_dir"] = "./data"
-	yamlConfig["poll_interval"] = "1m"
-	yamlConfig["max_concurrency"] = 3
-	yamlConfig["default_timeout"] = "5m"
+	yamlConfig["token"] = "${OPENLANE_AGENT_TOKEN}"
+	yamlConfig["apiUrl"] = "https://api.theopenlane.io"
+	yamlConfig["agentName"] = "production-compliance-agent"
+	yamlConfig["logLevel"] = "info"
+	yamlConfig["dataDir"] = "./data"
+	yamlConfig["pollInterval"] = "1m"
+	yamlConfig["maxConcurrency"] = 3
+	yamlConfig["defaultTimeout"] = "5m"
 
 	// Configure evidence collection
 	evidence := map[string]any{
-		"enabled":          true,
-		"retention_period": "720h",           // 30 days
-		"max_file_size":    maxFileSizeBytes, // 100MB
-		"compress_files":   false,
+		"enabled":         true,
+		"retentionPeriod": "720h",           // 30 days
+		"maxFileSize":     maxFileSizeBytes, // 100MB
+		"compressFiles":   false,
 	}
 	yamlConfig["evidence"] = evidence
 
 	// Configure operation mode
 	offline := map[string]any{
-		"mode":          "normal",
-		"output_dir":    "./results",
-		"output_format": "json",
+		"mode":         "normal",
+		"outputDir":    "./results",
+		"outputFormat": "json",
 	}
 	yamlConfig["offline"] = offline
 
@@ -164,7 +164,7 @@ func generateYAMLConfig(yamlConfigPath string) error {
 			"schedule":    "0 6 * * *", // Daily at 6 AM
 			"timeout":     "5m",
 			"env":         []string{"ENCRYPTION_POLICY=required"},
-			"compliance_standards": []map[string]any{
+			"complianceStandards": []map[string]any{
 				{
 					"standard": "soc2v2022",
 					"controls": []string{"CC6.7"},
@@ -178,16 +178,14 @@ func generateYAMLConfig(yamlConfigPath string) error {
 					"controls": []string{"SC-28"},
 				},
 			},
-			"tags":           []string{"encryption", "storage", "host-security"},
-			"enabled":        true,
-			"evidence_paths": []string{"./evidence/disk-encryption-check/"},
-			"on_pass": map[string]any{
-				"upload_evidence":       true,
-				"update_control_status": true,
+			"tags":          []string{"encryption", "storage", "host-security"},
+			"enabled":       true,
+			"evidencePaths": []string{"./evidence/disk-encryption-check/"},
+			"onPass": map[string]any{
+				"uploadEvidence": true,
 			},
-			"on_fail": map[string]any{
-				"upload_evidence":       true,
-				"update_control_status": true,
+			"onFail": map[string]any{
+				"uploadEvidence": true,
 				"commands": []map[string]any{
 					{
 						"name":    "create-security-incident",

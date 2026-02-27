@@ -3,50 +3,38 @@ package clicommand
 import "errors"
 
 var (
-	// ErrConfigFileNotFound is returned when configuration file is not found
+	// ErrConfigFileNotFound is returned when the configuration file path does not exist
 	ErrConfigFileNotFound = errors.New("configuration file not found")
-	// ErrFailedToLoadConfig is returned when configuration loading fails
+	// ErrFailedToLoadConfig is returned when the configuration file cannot be loaded or parsed
 	ErrFailedToLoadConfig = errors.New("failed to load configuration")
-	// ErrFailedToCreateDataDir is returned when data directory creation fails
+	// ErrFailedToCreateDataDir is returned when the agent data directory cannot be created
 	ErrFailedToCreateDataDir = errors.New("failed to create data directory")
-	// ErrAgentRegistrationFailed is returned when agent registration fails
-	ErrAgentRegistrationFailed = errors.New("agent registration failed")
-	// ErrAgentFailedToStart is returned when agent fails to start
-	ErrAgentFailedToStart = errors.New("agent failed to start")
-	// ErrFailedToReadPIDFile is returned when PID file reading fails
+	// ErrFailedToReadPIDFile is returned when the PID file cannot be read
 	ErrFailedToReadPIDFile = errors.New("failed to read PID file")
-	// ErrInvalidPID is returned when PID is invalid
+	// ErrInvalidPID is returned when the PID file contains a non-integer value
 	ErrInvalidPID = errors.New("invalid PID")
-	// ErrFailedToFindProcess is returned when process finding fails
+	// ErrFailedToFindProcess is returned when the OS cannot locate a process by PID
 	ErrFailedToFindProcess = errors.New("failed to find process")
-	// ErrFailedToSendSIGTERM is returned when SIGTERM sending fails
+	// ErrFailedToSendSIGTERM is returned when SIGTERM cannot be delivered to the agent process
 	ErrFailedToSendSIGTERM = errors.New("failed to send SIGTERM")
-	// ErrFailedToKillProcess is returned when process killing fails
+	// ErrFailedToKillProcess is returned when the agent process cannot be forcefully terminated
 	ErrFailedToKillProcess = errors.New("failed to kill process")
-	// ErrFailedToWritePIDFile is returned when PID file writing fails
+	// ErrFailedToWritePIDFile is returned when the PID file cannot be written
 	ErrFailedToWritePIDFile = errors.New("failed to write PID file")
-	// ErrCheckNotFound is returned when check is not found
+	// ErrCheckNotFound is returned when the requested check name does not exist in the configuration
 	ErrCheckNotFound = errors.New("check not found")
-	// ErrFailedToCreateStorage is returned when storage creation fails
-	ErrFailedToCreateStorage = errors.New("failed to create storage")
-	// ErrCheckExecutionFailed is returned when check execution fails
-	ErrCheckExecutionFailed = errors.New("check execution failed")
-	// ErrFailedToCreateDirectory is returned when directory creation fails
+	// ErrFailedToCreateDirectory is returned when a required directory cannot be created
 	ErrFailedToCreateDirectory = errors.New("failed to create directory")
-	// ErrFailedToSaveConfig is returned when configuration saving fails
+	// ErrFailedToSaveConfig is returned when the configuration cannot be written to disk
 	ErrFailedToSaveConfig = errors.New("failed to save configuration")
-	// ErrFailedToMarshalConfig is returned when configuration marshaling fails
+	// ErrFailedToMarshalConfig is returned when the configuration cannot be serialized
 	ErrFailedToMarshalConfig = errors.New("failed to marshal configuration")
-	// ErrFailedToEncodeConfig is returned when configuration encoding fails
+	// ErrFailedToEncodeConfig is returned when the configuration cannot be JSON-encoded
 	ErrFailedToEncodeConfig = errors.New("failed to encode configuration")
-	// ErrUnsupportedFormat is returned when format is unsupported
+	// ErrUnsupportedFormat is returned when an output format other than yaml or json is requested
 	ErrUnsupportedFormat = errors.New("unsupported format")
-	// ErrAgentAlreadyRunning is returned when agent is already running
+	// ErrAgentAlreadyRunning is returned when a PID file indicates the agent is already active
 	ErrAgentAlreadyRunning = errors.New("agent already running")
-	// ErrConfigFileExists is returned when configuration file already exists
+	// ErrConfigFileExists is returned when an init would overwrite an existing configuration file without --force
 	ErrConfigFileExists = errors.New("configuration file already exists")
-	// ErrSchemaGenerationFailed is returned when schema generation fails
-	ErrSchemaGenerationFailed = errors.New("failed to generate schema")
-	// ErrInvalidOutputFormat is returned when output format is invalid
-	ErrInvalidOutputFormat = errors.New("invalid output format")
 )

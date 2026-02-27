@@ -65,7 +65,7 @@ func ConfigInitAction(_ context.Context, cmd *cli.Command) error {
 
 	// Override with CLI flags if provided
 	if apiKey := cmd.String("api-key"); apiKey != "" {
-		cfg.RegistrationToken = apiKey
+		cfg.APIToken = apiKey
 	}
 
 	if apiURL := cmd.String("api-url"); apiURL != "" {
@@ -186,17 +186,7 @@ func ConfigShowAction(_ context.Context, cmd *cli.Command) error {
 
 	// Redact sensitive information if requested
 	if redact {
-		cfg.RegistrationToken = "[REDACTED]"
-		for i := range cfg.Checks {
-			for j, env := range cfg.Checks[i].Env {
-				if containsSensitiveKey(env) {
-					parts := splitEnvVar(env)
-					if len(parts) == keyValueParts {
-						cfg.Checks[i].Env[j] = parts[0] + "=[REDACTED]"
-					}
-				}
-			}
-		}
+		redactSensitiveConfig(cfg)
 	}
 
 	// Output in requested format
@@ -248,6 +238,48 @@ func containsSensitiveKey(envVar string) bool {
 	}
 
 	return false
+}
+
+func redactSensitiveConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+
+	cfg.APIToken = "[REDACTED]"
+
+	for i := range cfg.Checks {
+		redactSensitiveEnvVars(cfg.Checks[i].Env)
+
+		for j := range cfg.Checks[i].PlatformVariants {
+			redactSensitiveEnvVars(cfg.Checks[i].PlatformVariants[j].Env)
+		}
+
+		redactSensitiveActionConfig(cfg.Checks[i].OnPass)
+		redactSensitiveActionConfig(cfg.Checks[i].OnFail)
+	}
+}
+
+func redactSensitiveActionConfig(action *config.ActionConfig) {
+	if action == nil {
+		return
+	}
+
+	for i := range action.Commands {
+		redactSensitiveEnvVars(action.Commands[i].Env)
+	}
+}
+
+func redactSensitiveEnvVars(envVars []string) {
+	for i, envVar := range envVars {
+		if !containsSensitiveKey(envVar) {
+			continue
+		}
+
+		parts := splitEnvVar(envVar)
+		if len(parts) == keyValueParts {
+			envVars[i] = parts[0] + "=[REDACTED]"
+		}
+	}
 }
 
 func splitEnvVar(envVar string) []string {

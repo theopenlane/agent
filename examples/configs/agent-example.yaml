@@ -1,0 +1,104 @@
+# Openlane Agent Configuration Example
+# This example shows local cron-scheduled checks with API token auth.
+
+token: "${OPENLANE_AGENT_TOKEN}"
+apiUrl: "https://api.theopenlane.io"
+agentName: "production-compliance-agent"
+logLevel: "info"
+dataDir: "./data"
+pollInterval: "1m"
+spawn: 1
+maxConcurrency: 3
+defaultTimeout: "5m"
+
+evidence:
+  enabled: true
+  retentionPeriod: "720h"
+  maxFileSize: 104857600
+  compressFiles: false
+
+offline:
+  mode: "buffered"
+  outputDir: "./results"
+  outputFormat: "json"
+  bufferDir: "./buffer"
+  connectivityCheckUrl: ""
+  connectivityInterval: "30s"
+  syncInterval: "5m"
+  maxRetries: 5
+  bufferRetentionPeriod: "168h"
+
+checks:
+  - name: "aws-iam-compliance"
+    description: "Check AWS IAM configuration for compliance issues"
+    command: "./scripts/check-aws-iam.sh"
+    schedule: "0 */4 * * *"
+    timeout: "10m"
+    env:
+      - "AWS_REGION=us-east-1"
+    complianceStandards:
+      - standard: "soc2v2022"
+        controls:
+          - "CC6.1"
+      - standard: "iso27001v2022"
+        controls:
+          - "A.9.2.1"
+    tags:
+      - "aws"
+      - "iam"
+      - "critical"
+    enabled: true
+    evidencePaths:
+      - "./evidence/aws-iam/"
+      - "./logs/aws-audit.json"
+    onPass:
+      uploadEvidence: true
+    onFail:
+      uploadEvidence: true
+      commands:
+        - name: "create-remediation-ticket"
+          command: "./scripts/create-ticket.sh"
+          args:
+            - "--category"
+            - "iam"
+            - "--priority"
+            - "high"
+          timeout: "1m"
+
+  - name: "disk-encryption-check"
+    description: "Verify that full disk encryption is enabled on the system"
+    command: "./scripts/check-disk-encryption.sh"
+    schedule: "0 6 * * *"
+    timeout: "5m"
+    env:
+      - "ENCRYPTION_POLICY=required"
+    complianceStandards:
+      - standard: "soc2v2022"
+        controls:
+          - "CC6.7"
+      - standard: "iso27001v2022"
+        controls:
+          - "A.10.1.1"
+      - standard: "nist80053v5"
+        controls:
+          - "SC-28"
+    tags:
+      - "encryption"
+      - "storage"
+      - "host-security"
+    enabled: true
+    evidencePaths:
+      - "./evidence/disk-encryption-check/"
+    onPass:
+      uploadEvidence: true
+    onFail:
+      uploadEvidence: true
+      commands:
+        - name: "create-security-incident"
+          command: "./scripts/create-incident.sh"
+          args:
+            - "--type"
+            - "encryption"
+            - "--severity"
+            - "high"
+          timeout: "1m"

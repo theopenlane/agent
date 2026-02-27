@@ -2,15 +2,11 @@ version: "3"
 
 env:
   OPENLANE_API_HOST: "http://localhost:17608"
-  AGENT_CONFIG_FILE: "agent-test.yaml"
-  AGENT_USER_EMAIL: "agent-test@theopenlane.io"
   AGENT_DATA_DIR: "./data"
   AGENT_LOG_LEVEL: "debug"
 
 vars:
   TEST_CONFIG: "test-agent.yaml"
-  AGENT_NAME: "test-compliance-agent"
-  TEST_SCRIPT: "./test-data/scripts/test-check.sh"
 
 tasks:
   default:
@@ -18,27 +14,15 @@ tasks:
     cmds:
       - task --list
 
-  # === Build Tasks ===
   build:
     desc: Build the agent binary
     cmds:
       - go build -mod=mod -o openlane-agent ./main.go
 
-  # === Configuration Tasks ===
-  config:generate:
-    desc: Generate comprehensive agent configuration files
-    cmds:
-      - go run jsonschema/schema_generator.go
-
   config:validate:
     desc: Validate agent configuration file
     cmds:
       - go run cmd/validate-config/main.go {{.CONFIG_FILE | default .AGENT_CONFIG_FILE}}
-
-  config:example:
-    desc: Create example configuration file
-    cmds:
-      - cp agent-example.yaml {{.AGENT_CONFIG_FILE}}
 
   config:init:
     desc: Initialize new agent configuration
@@ -77,88 +61,16 @@ tasks:
     cmds:
       - ./openlane-agent config show --config {{.AGENT_CONFIG_FILE}}
 
-  config:show:json:
-    desc: Show current configuration in JSON format
-    deps: [build]
-    cmds:
-      - ./openlane-agent config show --config {{.AGENT_CONFIG_FILE}} --format json
-
-  test:config:check:
-    desc: Validate the test configuration
-    deps: [build:agent]
-    cmds:
-      - ./openlane-agent start --config {{.TEST_CONFIG}} --dry-run --api-url {{.OPENLANE_API_HOST}}
-
-  test:single:check:
-    desc: Run a single compliance check locally
-    deps: [build:agent, test:setup]
-    cmds:
-      - ./openlane-agent check local-security-scan --config {{.TEST_CONFIG}}
-
-  # === Server Management ===
   server:check:
     desc: Check if Openlane server is running
     cmds:
       - curl -f {{.OPENLANE_API_HOST}}/livez || (echo "Server not running. Please start the server first." && exit 1)
 
-  # === Agent Execution ===
   agent:run:
     desc: Run the agent with test configuration (daemon mode)
     deps: [build]
     cmds:
       - ./openlane-agent start -c {{.AGENT_CONFIG_FILE}}
-
-  agent:run:foreground:
-    desc: Run the agent in foreground mode
-    deps: [build]
-    cmds:
-      - ./openlane-agent start -c {{.AGENT_CONFIG_FILE}} --no-daemon
-
-  agent:run:debug:
-    desc: Run agent in debug mode (foreground)
-    deps: [build]
-    cmds:
-      - ./openlane-agent start -c {{.AGENT_CONFIG_FILE}} --no-daemon --log-level debug
-
-  agent:run:dry:
-    desc: Dry run - validate configuration without starting
-    deps: [build]
-    cmds:
-      - ./openlane-agent start -c {{.AGENT_CONFIG_FILE}} --dry-run
-
-  agent:run:standalone:
-    desc: Run agent in standalone mode (no API connectivity)
-    deps: [build]
-    vars:
-      STANDALONE_CONFIG: "agent-standalone.yaml"
-    cmds:
-      - ./openlane-agent start -c {{.STANDALONE_CONFIG}} --no-daemon --log-level debug
-
-  agent:run:buffered:
-    desc: Run agent in buffered mode (with local fallback)
-    deps: [build]
-    vars:
-      BUFFERED_CONFIG: "agent-buffered.yaml"
-    cmds:
-      - ./openlane-agent start -c {{.BUFFERED_CONFIG}} --no-daemon --log-level debug
-
-  agent:run:single:check:
-    desc: Run a single compliance check
-    deps: [build]
-    cmds:
-      - ./openlane-agent check {{.CLI_ARGS}} --config {{.AGENT_CONFIG_FILE}}
-
-  agent:run:high:concurrency:
-    desc: Run agent with high concurrency
-    deps: [build]
-    cmds:
-      - ./openlane-agent start -c {{.AGENT_CONFIG_FILE}} --no-daemon --max-concurrency 10
-
-  agent:start:
-    desc: Start the compliance agent (foreground)
-    deps: [build:agent, test:setup, test:config:check]
-    cmds:
-      - ./openlane-agent start --config {{.TEST_CONFIG}} --no-daemon --log-level debug --api-url {{.OPENLANE_API_HOST}}
 
   agent:start:bg:
     desc: Start the compliance agent in background
@@ -195,14 +107,6 @@ tasks:
     cmds:
       - ./openlane-agent status
 
-  # === Work Queue Management ===
-  queue:job:
-    desc: Queue a job for the agent (placeholder - would use API)
-    cmds:
-      - echo "This would queue a job via the Openlane API"
-      - echo "For now, the agent will execute local checks based on the schedule"
-
-  ## Go tasks
   go:lint:
     desc: runs golangci-lint, the most annoying opinionated linter ever
     cmds:
@@ -221,26 +125,14 @@ tasks:
 
   go:test:
     desc: runs and outputs results of created go tests
-    aliases: ['go:test:psql', 'test:psql']
-    env:
-      TEST_DB_URL: "docker://postgres:16-alpine"
     cmds:
       - go test -v ./...
 
   go:test:cover:
     desc: runs and outputs results of created go tests with coverage
     aliases: [cover]
-    env:
-      TEST_DB_URL: "docker://postgres:16-alpine"
     cmds:
       - go test -v ./... -coverprofile=coverage.out
-
-  go:test:cover:out:
-    desc: runs and outputs results of created go tests with coverage
-    aliases: [cover]
-    cmds:
-      - task: go:test:cover
-      - go tool cover -html=coverage.out
 
   go:tidy:
     desc: runs go mod tidy on the backend

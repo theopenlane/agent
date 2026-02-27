@@ -32,7 +32,7 @@ func TestWithAPIConfig(t *testing.T) {
 	opt(config)
 
 	assert.Equal(t, "https://api.example.com", config.APIURL)
-	assert.Equal(t, "token123", config.RegistrationToken)
+	assert.Equal(t, "token123", config.APIToken)
 }
 
 func TestWithBuffering(t *testing.T) {

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,7 +19,6 @@ import (
 	"github.com/theopenlane/agent/internal/platform"
 	"github.com/theopenlane/agent/internal/storage"
 	"github.com/theopenlane/core/common/enums"
-	"github.com/theopenlane/go-client/graphclient"
 )
 
 const (
@@ -49,9 +49,7 @@ type ComplianceCheckController struct {
 	logOffset   uint64
 
 	// Current executing check context
-	currentCheckName      string
-	currentScheduledJobID string
-	currentOwnerID        string
+	currentCheckName string
 }
 
 type checkState string
@@ -81,32 +79,13 @@ func (c *ComplianceCheckController) ExecuteCheck(ctx context.Context, check *con
 	return c.ExecuteLocalCheck(ctx, check)
 }
 
-// ExecuteScheduledJob executes a scheduled job by converting it to config.Check format
-func (c *ComplianceCheckController) ExecuteScheduledJob(ctx context.Context, scheduledJob *graphclient.ScheduledJob) (*config.Result, error) {
-	// Convert scheduled job to config.Check format
-	check, err := c.convertScheduledJobToCheck(scheduledJob)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert scheduled job to check: %w", err)
-	}
-
-	ownerID := ""
-	if scheduledJob.OwnerID != nil {
-		ownerID = *scheduledJob.OwnerID
-	}
-
-	c.currentOwnerID = ownerID
-	c.SetCurrentCheck(check.Name, scheduledJob.ID)
-
-	return c.ExecuteLocalCheck(ctx, check)
-}
-
 // ExecuteLocalCheck executes a local check with full configuration support including evidence and actions
 func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check *config.Check) (*config.Result, error) {
 	c.setState(checkStateStarted)
 	c.startTime = time.Now()
 
 	// Set the current execution context for logging
-	c.SetCurrentCheck(check.Name, c.currentScheduledJobID)
+	c.SetCurrentCheck(check.Name)
 
 	// Validate compliance controls before execution
 	validatedControls, shouldExecute, reason := c.validateControlsBeforeExecution(ctx, check)
@@ -122,7 +101,7 @@ func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check
 			ExitCode:   &[]int{1}[0],
 			Metadata:   c.baseMetadata(),
 		}
-		c.attachComplianceMetadata(result, check, validatedControls)
+		c.attachComplianceMetadata(ctx, result, check, validatedControls)
 		// Add duration to metadata
 		result.Metadata["duration"] = result.FinishedAt.Sub(result.StartedAt).String()
 
@@ -154,7 +133,7 @@ func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check
 			ExitCode:   &[]int{1}[0],
 			Metadata:   c.baseMetadata(),
 		}
-		c.attachComplianceMetadata(result, check, validatedControls)
+		c.attachComplianceMetadata(ctx, result, check, validatedControls)
 
 		return result, ErrCheckNotSupportedOnPlatform
 	}
@@ -168,7 +147,7 @@ func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check
 		Status:    "PENDING",
 		Metadata:  c.baseMetadata(),
 	}
-	c.attachComplianceMetadata(result, check, validatedControls)
+	c.attachComplianceMetadata(ctx, result, check, validatedControls)
 
 	defer func() {
 		c.endTime = time.Now()
@@ -204,7 +183,7 @@ func (c *ComplianceCheckController) ExecuteLocalCheck(ctx context.Context, check
 
 		c.setState(checkStateFailed)
 
-		return result, fmt.Errorf("%w: %w", ErrCheckExecutionTimeout, err)
+		return result, err
 	}
 
 	// Apply platform-specific result evaluation if configured
@@ -351,21 +330,17 @@ func (c *ComplianceCheckController) setState(state checkState) {
 	c.state = state
 }
 
-// WriteLog writes log content for this check (similar to Buildkite's log streaming)
-func (c *ComplianceCheckController) WriteLog(ctx context.Context, logLine string) error {
+// WriteLog writes check log content to the local logger
+func (c *ComplianceCheckController) WriteLog(logLine string) error {
 	c.logMutex.Lock()
 	defer c.logMutex.Unlock()
 
-	// Stream logs both locally and to platform
 	checkName := c.currentCheckName
 	if checkName == "" {
 		checkName = "unknown"
 	}
 
 	log.Info().Str("check", checkName).Str("output", logLine).Uint64("sequence", c.logSequence).Msg("Check output")
-
-	// Store log for potential platform streaming
-	c.streamLogToPlatform(ctx, logLine)
 
 	size := uint64(len(logLine))
 	c.logSequence++
@@ -374,46 +349,14 @@ func (c *ComplianceCheckController) WriteLog(ctx context.Context, logLine string
 	return nil
 }
 
-// streamLogToPlatform streams log output to the Openlane platform if configured
-func (c *ComplianceCheckController) streamLogToPlatform(_ context.Context, logLine string) {
-	// Check if we have a client and scheduled job ID for streaming
-	if c.currentScheduledJobID == "" {
-		// No job ID available for streaming
-		return
-	}
-
-	checkName := c.currentCheckName
-	if checkName == "" {
-		checkName = "unknown"
-	}
-
-	// Create structured log entry for platform
-	logEntry := map[string]any{
-		"timestamp":        time.Now().UTC(),
-		"check_name":       checkName,
-		"scheduled_job_id": c.currentScheduledJobID,
-		"sequence":         c.logSequence,
-		"offset":           c.logOffset,
-		"content":          logLine,
-		"level":            "info",
-	}
-
-	// In a production implementation, this would stream to the platform
-	// For now, we structure the log appropriately for future streaming
-	log.Debug().Interface("log_entry", logEntry).Msg("Prepared log entry for platform streaming")
-}
-
 // GetCheckName returns a name for this check (for logging purposes)
 func (c *ComplianceCheckController) GetCheckName() string {
 	return fmt.Sprintf("check-%d", c.startTime.UnixNano())
 }
 
 // SetCurrentCheck sets the current check context for logging
-func (c *ComplianceCheckController) SetCurrentCheck(checkName, scheduledJobID string) {
+func (c *ComplianceCheckController) SetCurrentCheck(checkName string) {
 	c.currentCheckName = checkName
-	if scheduledJobID != "" || c.currentScheduledJobID == "" {
-		c.currentScheduledJobID = scheduledJobID
-	}
 }
 
 // GetStats returns statistics about this check execution
@@ -498,6 +441,8 @@ func (c *ComplianceCheckController) executeLocalCommand(ctx context.Context, che
 			exitCode = exitError.ExitCode()
 			// Non-zero exit code is not necessarily an error for compliance checks
 			err = nil
+		} else if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			return stdout.String(), stderr.String(), -1, ErrCheckExecutionTimeout
 		} else {
 			return "", stderr.String(), -1, fmt.Errorf("%w: %w", ErrFailedToExecuteCommand, err)
 		}
@@ -543,7 +488,7 @@ func (c *ComplianceCheckController) handleEvidenceCollection(ctx context.Context
 	}
 
 	// Create evidence from command output
-	outputEvidenceFiles, err := c.evidenceService.CreateEvidenceFromOutput(context.Background(), check.Name, []byte(stdout), []byte(stderr))
+	outputEvidenceFiles, err := c.evidenceService.CreateEvidenceFromOutput(ctx, check.Name, []byte(stdout), []byte(stderr))
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create evidence from output")
 	} else {
@@ -578,19 +523,6 @@ func (c *ComplianceCheckController) executeActions(ctx context.Context, check *c
 
 			if !command.ContinueOnError {
 				return fmt.Errorf("%w %s: %w", ErrFailedToExecuteAction, command.Name, err)
-			}
-		}
-	}
-
-	// Evidence upload is handled directly by storage layer
-
-	// Update control status if configured
-	if actionConfig.UpdateControlStatus {
-		allControls := check.GetAllControls()
-		for _, controlID := range allControls {
-			passed := result.Status == enums.JobExecutionStatusSuccess
-			if err := c.updateControlStatus(ctx, controlID, passed); err != nil {
-				log.Error().Err(err).Str("control_id", controlID).Msg("Failed to update control status")
 			}
 		}
 	}
@@ -647,20 +579,10 @@ func (c *ComplianceCheckController) executeActionCommand(ctx context.Context, ac
 }
 
 func (c *ComplianceCheckController) baseMetadata() map[string]any {
-	metadata := make(map[string]any)
-
-	if c.currentScheduledJobID != "" {
-		metadata["scheduled_job_id"] = c.currentScheduledJobID
-	}
-
-	if c.currentOwnerID != "" {
-		metadata["owner_id"] = c.currentOwnerID
-	}
-
-	return metadata
+	return make(map[string]any)
 }
 
-func (c *ComplianceCheckController) attachComplianceMetadata(result *config.Result, check *config.Check, validatedControls map[string][]string) {
+func (c *ComplianceCheckController) attachComplianceMetadata(ctx context.Context, result *config.Result, check *config.Check, validatedControls map[string][]string) {
 	if result == nil || check == nil || len(check.ComplianceStandards) == 0 {
 		return
 	}
@@ -685,7 +607,7 @@ func (c *ComplianceCheckController) attachComplianceMetadata(result *config.Resu
 		result.Metadata["control_ref"] = primaryControlRef
 	}
 
-	controlIDs, err := c.resolveControlIDs(check, validatedControls)
+	controlIDs, err := c.resolveControlIDs(ctx, check, validatedControls)
 	if err != nil {
 		log.Warn().Err(err).Str("check", check.Name).Msg("Failed to resolve control IDs for evidence association")
 	}
@@ -715,12 +637,13 @@ func selectPrimaryComplianceReference(check *config.Check, validatedControls map
 	return "", ""
 }
 
-func (c *ComplianceCheckController) resolveControlIDs(check *config.Check, validatedControls map[string][]string) ([]string, error) {
+func (c *ComplianceCheckController) resolveControlIDs(ctx context.Context, check *config.Check, validatedControls map[string][]string) ([]string, error) {
 	if c.apiClient == nil || check == nil || len(check.ComplianceStandards) == 0 {
 		return nil, nil
 	}
 
 	standardsToResolve := make([]config.ComplianceStandard, 0, len(check.ComplianceStandards))
+
 	for _, configured := range check.ComplianceStandards {
 		controls := configured.Controls
 		if validated, ok := validatedControls[configured.Standard]; ok && len(validated) > 0 {
@@ -741,29 +664,7 @@ func (c *ComplianceCheckController) resolveControlIDs(check *config.Check, valid
 		return nil, nil
 	}
 
-	return c.apiClient.ResolveControlIDs(standardsToResolve)
-}
-
-// updateControlStatus updates the status of a control based on the check result
-func (c *ComplianceCheckController) updateControlStatus(_ context.Context, controlID string, passed bool) error {
-	if c.apiClient == nil {
-		log.Debug().Msg("API client not available, skipping control status update")
-		return nil
-	}
-
-	log.Info().Str("control_id", controlID).Bool("passed", passed).Msg("Updating control status")
-
-	// This would update the control status in the Openlane platform
-	// The exact implementation would depend on the available GraphQL mutations
-	status := "compliant"
-	if !passed {
-		status = "non_compliant"
-	}
-
-	// Placeholder for actual control update
-	log.Info().Str("control_id", controlID).Str("status", status).Msg("Control status update (placeholder)")
-
-	return nil
+	return c.apiClient.ResolveControlIDs(ctx, standardsToResolve)
 }
 
 // executeFileCheck performs a file-based check following gitMDM patterns
@@ -846,7 +747,7 @@ func (c *ComplianceCheckController) evaluatePlatformResult(stdout string, exitCo
 }
 
 // validateControlsBeforeExecution validates controls before executing a check using fail-open logic
-func (c *ComplianceCheckController) validateControlsBeforeExecution(_ context.Context, check *config.Check) (map[string][]string, bool, string) {
+func (c *ComplianceCheckController) validateControlsBeforeExecution(ctx context.Context, check *config.Check) (map[string][]string, bool, string) {
 	// If no API client available, skip validation and allow execution
 	if c.apiClient == nil {
 		log.Debug().Str("check", check.Name).Msg("No API client available, skipping control validation")
@@ -860,7 +761,7 @@ func (c *ComplianceCheckController) validateControlsBeforeExecution(_ context.Co
 	}
 
 	// Validate controls against Openlane system
-	validatedControls, err := c.apiClient.ValidateControls(check.ComplianceStandards)
+	validatedControls, err := c.apiClient.ValidateControls(ctx, check.ComplianceStandards)
 	if err != nil {
 		log.Error().Err(err).Str("check", check.Name).Msg("Control validation failed, proceeding anyway (fail-open)")
 		return make(map[string][]string), true, "control validation failed but proceeding (fail-open)"
@@ -876,101 +777,4 @@ func (c *ComplianceCheckController) validateControlsBeforeExecution(_ context.Co
 	}
 
 	return validControls, shouldExecute, reason
-}
-
-// convertScheduledJobToCheck converts a scheduled job to config.Check format
-func (c *ComplianceCheckController) convertScheduledJobToCheck(scheduledJob *graphclient.ScheduledJob) (*config.Check, error) {
-	// Parse configuration from scheduled job
-	var jobConfig map[string]any
-	if scheduledJob.Configuration != nil {
-		if err := json.Unmarshal([]byte(scheduledJob.Configuration), &jobConfig); err != nil {
-			return nil, fmt.Errorf("failed to parse job configuration: %w", err)
-		}
-	}
-
-	// Extract basic fields from configuration
-	command, _ := jobConfig["command"].(string)
-	if command == "" {
-		return nil, ErrMissingCommand
-	}
-
-	// Convert args from any slice to string slice
-	var args []string
-
-	if argsInterface, ok := jobConfig["args"].([]any); ok {
-		for _, arg := range argsInterface {
-			if argStr, ok := arg.(string); ok {
-				args = append(args, argStr)
-			}
-		}
-	}
-
-	// Extract environment variables
-	var env []string
-
-	if envInterface, ok := jobConfig["env"].([]any); ok {
-		for _, envVar := range envInterface {
-			if envStr, ok := envVar.(string); ok {
-				env = append(env, envStr)
-			}
-		}
-	}
-
-	// Parse timeout
-	timeout := defaultExecutionTimeoutMinutes * time.Minute // default
-
-	if timeoutStr, ok := jobConfig["timeout"].(string); ok {
-		if d, err := time.ParseDuration(timeoutStr); err == nil {
-			timeout = d
-		}
-	}
-
-	// Create config.Check with converted data
-	schedule := ""
-	if scheduledJob.Cron != nil {
-		schedule = *scheduledJob.Cron
-	}
-
-	check := &config.Check{
-		Name:        fmt.Sprintf("scheduled-%s", scheduledJob.ID),
-		Description: "Scheduled job from Openlane platform",
-		Command:     command,
-		Args:        args,
-		Env:         env,
-		Timeout:     timeout,
-		Schedule:    schedule,
-		Enabled:     scheduledJob.Active,
-
-		// Set compliance standards based on job's control associations
-		ComplianceStandards: c.extractComplianceStandards(scheduledJob),
-
-		// Default actions for scheduled jobs
-		OnPass: &config.ActionConfig{
-			UploadEvidence:      true,
-			UpdateControlStatus: true,
-		},
-		OnFail: &config.ActionConfig{
-			UploadEvidence:      true,
-			UpdateControlStatus: true,
-		},
-	}
-
-	// Extract working directory if specified
-	if workDir, ok := jobConfig["workDir"].(string); ok {
-		check.WorkDir = workDir
-	}
-
-	// Extract continue on error setting
-	if continueOnError, ok := jobConfig["continueOnError"].(bool); ok {
-		check.ContinueOnError = continueOnError
-	}
-
-	return check, nil
-}
-
-// extractComplianceStandards extracts compliance standards from scheduled job.
-// Control associations are not included in the GetScheduledJobs query response,
-// so this returns an empty slice. Standards are resolved from the check configuration instead.
-func (c *ComplianceCheckController) extractComplianceStandards(_ *graphclient.ScheduledJob) []config.ComplianceStandard {
-	return nil
 }

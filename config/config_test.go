@@ -16,15 +16,15 @@ func TestConfigValidation(t *testing.T) {
 		{
 			name: "valid config",
 			config: &Config{
-				RegistrationToken: "test-token",
-				APIURL:            "https://api.theopenlane.io",
-				AgentName:         "test-agent",
-				LogLevel:          "info",
-				DataDir:           "/tmp/test-data",
-				PollInterval:      1 * time.Minute,
-				Spawn:             1,
-				MaxConcurrency:    3,
-				DefaultTimeout:    5 * time.Minute,
+				APIToken:       "test-token",
+				APIURL:         "https://api.theopenlane.io",
+				AgentName:      "test-agent",
+				LogLevel:       "info",
+				DataDir:        "/tmp/test-data",
+				PollInterval:   1 * time.Minute,
+				Spawn:          1,
+				MaxConcurrency: 3,
+				DefaultTimeout: 5 * time.Minute,
 				Evidence: EvidenceConfig{
 					Enabled:         true,
 					RetentionPeriod: 30 * 24 * time.Hour,
@@ -33,12 +33,12 @@ func TestConfigValidation(t *testing.T) {
 				},
 				Checks: []Check{
 					{
-						Name:          "test-check",
-						Description:   "A test check",
-						Command:       "echo",
-						Args:          []string{"hello"},
-						Schedule:      "* * * * *",
-						Timeout:       1 * time.Minute,
+						Name:        "test-check",
+						Description: "A test check",
+						Command:     "echo",
+						Args:        []string{"hello"},
+						Schedule:    "* * * * *",
+						Timeout:     1 * time.Minute,
 						ComplianceStandards: []ComplianceStandard{
 							{
 								Standard: "test",
@@ -49,12 +49,10 @@ func TestConfigValidation(t *testing.T) {
 						Enabled:       true,
 						EvidencePaths: []string{"/tmp/evidence"},
 						OnPass: &ActionConfig{
-							UploadEvidence:      true,
-							UpdateControlStatus: true,
+							UploadEvidence: true,
 						},
 						OnFail: &ActionConfig{
-							UploadEvidence:      true,
-							UpdateControlStatus: true,
+							UploadEvidence: true,
 							Commands: []ActionCommand{
 								{
 									Name:    "alert",
@@ -70,7 +68,7 @@ func TestConfigValidation(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "missing registration token",
+			name: "missing API token",
 			config: &Config{
 				APIURL:   "https://api.theopenlane.io",
 				DataDir:  "/tmp/test-data",
@@ -81,19 +79,19 @@ func TestConfigValidation(t *testing.T) {
 		{
 			name: "missing API URL",
 			config: &Config{
-				RegistrationToken: "test-token",
-				DataDir:           "/tmp/test-data",
-				LogLevel:          "info",
+				APIToken: "test-token",
+				DataDir:  "/tmp/test-data",
+				LogLevel: "info",
 			},
 			expectErr: true,
 		},
 		{
 			name: "invalid check - missing name",
 			config: &Config{
-				RegistrationToken: "test-token",
-				APIURL:            "https://api.theopenlane.io",
-				DataDir:           "/tmp/test-data",
-				LogLevel:          "info",
+				APIToken: "test-token",
+				APIURL:   "https://api.theopenlane.io",
+				DataDir:  "/tmp/test-data",
+				LogLevel: "info",
 				Checks: []Check{
 					{
 						Command:  "echo",
@@ -106,10 +104,10 @@ func TestConfigValidation(t *testing.T) {
 		{
 			name: "invalid check - missing command",
 			config: &Config{
-				RegistrationToken: "test-token",
-				APIURL:            "https://api.theopenlane.io",
-				DataDir:           "/tmp/test-data",
-				LogLevel:          "info",
+				APIToken: "test-token",
+				APIURL:   "https://api.theopenlane.io",
+				DataDir:  "/tmp/test-data",
+				LogLevel: "info",
 				Checks: []Check{
 					{
 						Name:     "test",
@@ -122,10 +120,10 @@ func TestConfigValidation(t *testing.T) {
 		{
 			name: "invalid cron schedule",
 			config: &Config{
-				RegistrationToken: "test-token",
-				APIURL:            "https://api.theopenlane.io",
-				DataDir:           "/tmp/test-data",
-				LogLevel:          "info",
+				APIToken: "test-token",
+				APIURL:   "https://api.theopenlane.io",
+				DataDir:  "/tmp/test-data",
+				LogLevel: "info",
 				Checks: []Check{
 					{
 						Name:     "test",
@@ -154,7 +152,7 @@ func TestConfigValidation(t *testing.T) {
 			} else {
 				err = ValidateConfig(tt.config)
 			}
-			
+
 			if tt.expectErr && err == nil {
 				t.Errorf("expected error but got none")
 			}
@@ -269,6 +267,45 @@ func TestGetCheck(t *testing.T) {
 	}
 }
 
+func TestTokenCompatibility(t *testing.T) {
+	cfg := &Config{APIToken: "  new-token  "}
+	if got := cfg.Token(); got != "new-token" {
+		t.Fatalf("expected token trimming, got %q", got)
+	}
+
+	tmpFile, err := os.CreateTemp("", "agent-config-*.yaml")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	configYAML := `
+registrationToken: legacy-token
+apiUrl: https://api.theopenlane.io
+dataDir: /tmp/test-data-legacy
+logLevel: info
+offline:
+  mode: standalone
+  outputDir: /tmp/test-results-legacy
+checks: []
+`
+	if _, err := tmpFile.WriteString(configYAML); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	loaded, err := LoadConfig(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	defer os.RemoveAll("/tmp/test-data-legacy")
+	defer os.RemoveAll("/tmp/test-results-legacy")
+
+	if loaded.Token() != "legacy-token" {
+		t.Fatalf("expected legacy registrationToken fallback, got %q", loaded.Token())
+	}
+}
+
 func TestActionConfigValidation(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -279,8 +316,7 @@ func TestActionConfigValidation(t *testing.T) {
 		{
 			name: "valid action config",
 			action: &ActionConfig{
-				UploadEvidence:      true,
-				UpdateControlStatus: true,
+				UploadEvidence: true,
 				Commands: []ActionCommand{
 					{
 						Name:    "test-action",

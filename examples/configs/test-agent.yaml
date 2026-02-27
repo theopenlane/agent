@@ -1,0 +1,45 @@
+token: ${OPENLANE_AGENT_TOKEN}
+apiUrl: http://localhost:17608
+agentName: test-compliance-agent
+logLevel: debug
+dataDir: ./data
+pollInterval: 10s
+spawn: 1
+maxConcurrency: 2
+defaultTimeout: 5m
+
+evidence:
+  enabled: true
+  retentionPeriod: 24h
+  maxFileSize: 10485760
+  compressFiles: false
+
+checks:
+  - name: disk-encryption-check
+    description: Verify that FileVault disk encryption is enabled on macOS
+    command: fdesetup
+    args:
+      - status
+    schedule: "*/1 * * * *"
+    timeout: 30s
+    complianceStandards:
+      - standard: soc2v2022
+        controls:
+          - CC6.7
+    tags:
+      - encryption
+      - macos
+      - data-protection
+    enabled: true
+    evidencePaths:
+      - ./evidence/disk-encryption/
+    onPass:
+      uploadEvidence: true
+    onFail:
+      uploadEvidence: true
+      commands:
+        - name: log-encryption-failure
+          command: echo
+          args:
+            - "WARNING: Disk encryption not enabled - SOC2 CC6.7 control failure"
+          timeout: 10s

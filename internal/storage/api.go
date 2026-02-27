@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,6 +14,11 @@ import (
 	"github.com/theopenlane/agent/api"
 	"github.com/theopenlane/agent/config"
 	"github.com/theopenlane/agent/internal/models"
+)
+
+const (
+	// healthCheckTimeoutSeconds is the timeout used for API health check requests
+	healthCheckTimeoutSeconds = 10
 )
 
 // APIStorage implements Storage interface for direct API storage
@@ -30,11 +34,11 @@ func NewAPIStorage(cfg *Config) (*APIStorage, error) {
 		return nil, ErrAPIURLRequired
 	}
 
-	if cfg.RegistrationToken == "" {
-		return nil, ErrRegistrationTokenRequired
+	if cfg.APIToken == "" {
+		return nil, ErrAPITokenRequired
 	}
 
-	apiClient, err := api.NewGraphQLClient(cfg.APIURL, cfg.RegistrationToken)
+	apiClient, err := api.NewGraphQLClientWithRetry(cfg.APIURL, cfg.APIToken, cfg.OrgID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create API client: %w", err)
 	}
@@ -60,7 +64,7 @@ func (as *APIStorage) StoreResultWithEvidence(result *config.Result, evidence []
 
 	// Upload evidence files if provided and evidence is enabled
 	if len(evidence) > 0 && as.config.EvidenceEnabled {
-		if err := as.uploadEvidence(result, evidence); err != nil {
+		if err := as.uploadEvidence(ctx, result, evidence); err != nil {
 			log.Error().Err(err).Int("evidence_files", len(evidence)).Str("check", result.CheckName).Msg("Failed to upload evidence files")
 			// Continue with result upload even if evidence upload fails
 		} else {
@@ -74,7 +78,6 @@ func (as *APIStorage) StoreResultWithEvidence(result *config.Result, evidence []
 	}
 
 	duration := time.Since(start)
-	// Get findings count from metadata
 	findingsCount := 0
 
 	if result.Metadata != nil {
@@ -95,25 +98,10 @@ func (as *APIStorage) StoreResultWithEvidence(result *config.Result, evidence []
 
 // uploadResult uploads a compliance check result to the API
 func (as *APIStorage) uploadResult(ctx context.Context, result *config.Result) error {
-	// In job-control mode, report as JobResult.
-	if hasScheduledJobID(result) {
-		return as.apiClient.ReportResults(ctx, []*config.Result{result})
-	}
-
-	// In local-schedule token mode, persist a structured run artifact as evidence.
-	return as.uploadStandaloneResultAsEvidence(result)
+	return as.uploadStandaloneResultAsEvidence(ctx, result)
 }
 
-func hasScheduledJobID(result *config.Result) bool {
-	if result == nil || result.Metadata == nil {
-		return false
-	}
-
-	jobID, ok := result.Metadata["scheduled_job_id"].(string)
-	return ok && strings.TrimSpace(jobID) != ""
-}
-
-func (as *APIStorage) uploadStandaloneResultAsEvidence(result *config.Result) error {
+func (as *APIStorage) uploadStandaloneResultAsEvidence(ctx context.Context, result *config.Result) error {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("failed to marshal standalone result payload: %w", err)
@@ -121,6 +109,7 @@ func (as *APIStorage) uploadStandaloneResultAsEvidence(result *config.Result) er
 
 	checksum := fmt.Sprintf("%x", sha256.Sum256(payload))
 	checkName := strings.ReplaceAll(strings.TrimSpace(result.CheckName), " ", "-")
+
 	if checkName == "" {
 		checkName = "check"
 	}
@@ -138,9 +127,9 @@ func (as *APIStorage) uploadStandaloneResultAsEvidence(result *config.Result) er
 		},
 	}
 
-	jobResultID := fmt.Sprintf("standalone-%s-%d", checkName, time.Now().Unix())
+	runArtifactID := fmt.Sprintf("standalone-%s-%d", checkName, time.Now().Unix())
 
-	if err := as.apiClient.CreateEvidence(nil, evidence, jobResultID); err != nil {
+	if err := as.apiClient.CreateEvidence(ctx, nil, evidence, runArtifactID); err != nil {
 		return fmt.Errorf("failed to upload standalone result evidence: %w", err)
 	}
 
@@ -148,31 +137,19 @@ func (as *APIStorage) uploadStandaloneResultAsEvidence(result *config.Result) er
 }
 
 // uploadEvidence uploads evidence files with optional control associations using the GraphQL client
-func (as *APIStorage) uploadEvidence(result *config.Result, evidence []models.EvidenceFile) error {
-	// Prefer pre-resolved control IDs attached by the check controller.
+func (as *APIStorage) uploadEvidence(ctx context.Context, result *config.Result, evidence []models.EvidenceFile) error {
+	// Prefer pre-resolved control IDs attached by the check controller
 	allControls := controlIDsFromMetadata(result.Metadata)
 
-	// Backward-compatible fallback for legacy metadata/results with only standard+control_ref.
+	// Fallback for results that only carry standard+control_ref values.
 	if len(allControls) == 0 {
-		allControls = as.resolveLegacyControlIDs(result)
+		allControls = as.resolveControlIDsFromReferences(ctx, result)
 	}
 
-	// Get JobResult ID for evidence association
-	jobResultID := ""
+	runArtifactID := fmt.Sprintf("result-%s-%d", result.CheckName, result.StartedAt.Unix())
 
-	if result.Metadata != nil {
-		if id, ok := result.Metadata["job_result_id"].(string); ok {
-			jobResultID = id
-		}
-	}
-
-	if jobResultID == "" {
-		jobResultID = fmt.Sprintf("result-%s-%d", result.CheckName, result.StartedAt.Unix())
-	}
-
-	// Upload each evidence file with associated controls (or empty if none)
 	for _, evidenceFile := range evidence {
-		if err := as.uploadEvidenceFile(result, evidenceFile, allControls, jobResultID); err != nil {
+		if err := as.uploadEvidenceFile(ctx, result, evidenceFile, allControls, runArtifactID); err != nil {
 			log.Error().Err(err).Str("evidence_path", evidenceFile.Path).Str("check", result.CheckName).Msg("Failed to upload evidence file")
 			return fmt.Errorf("failed to upload evidence file %s: %w", evidenceFile.Path, err)
 		}
@@ -182,20 +159,20 @@ func (as *APIStorage) uploadEvidence(result *config.Result, evidence []models.Ev
 }
 
 // uploadEvidenceFile uploads a single evidence file with optional control associations
-func (as *APIStorage) uploadEvidenceFile(result *config.Result, evidence models.EvidenceFile, controlIDs []string, jobResultID string) error {
+func (as *APIStorage) uploadEvidenceFile(ctx context.Context, result *config.Result, evidence models.EvidenceFile, controlIDs []string, runArtifactID string) error {
 	controlIDsStr := "none"
 	if len(controlIDs) > 0 {
 		controlIDsStr = fmt.Sprintf("%d controls", len(controlIDs))
 	}
 
 	checksumPrefix := evidence.Checksum
-	if len(checksumPrefix) > 8 {
+	if len(checksumPrefix) > 8 { //nolint:mnd
 		checksumPrefix = checksumPrefix[:8]
 	}
 
 	log.Debug().Str("path", evidence.Path).Str("controls", controlIDsStr).Int64("size", evidence.Size).Str("checksum", checksumPrefix).Msg("Uploading evidence file")
 
-	if err := as.apiClient.CreateEvidence(controlIDs, evidence, jobResultID); err != nil {
+	if err := as.apiClient.CreateEvidence(ctx, controlIDs, evidence, runArtifactID); err != nil {
 		return fmt.Errorf("evidence upload failed: %w", err)
 	}
 
@@ -206,17 +183,10 @@ func (as *APIStorage) uploadEvidenceFile(result *config.Result, evidence models.
 
 // Health returns the current health status
 func (as *APIStorage) Health() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // nolint:mnd
+	ctx, cancel := context.WithTimeout(context.Background(), healthCheckTimeoutSeconds*time.Second)
 	defer cancel()
 
-	// Test API connectivity by trying to poll for work (simple connectivity test)
-	_, err := as.apiClient.PollForWork(ctx)
-	if err != nil {
-		// In local-schedule token mode, runner registration is intentionally skipped.
-		if errors.Is(err, api.ErrAgentNotRegistered) {
-			return nil
-		}
-
+	if err := as.apiClient.Health(ctx); err != nil {
 		return fmt.Errorf("API connectivity test failed: %w", err)
 	}
 
@@ -225,7 +195,6 @@ func (as *APIStorage) Health() error {
 
 // Close gracefully shuts down the storage system
 func (as *APIStorage) Close() error {
-	// API client doesn't need explicit closing in current implementation
 	log.Info().Msg("API storage closed")
 	return nil
 }
@@ -241,6 +210,7 @@ func controlIDsFromMetadata(metadata map[string]any) []string {
 	}
 
 	var parsed []string
+
 	switch v := rawControlIDs.(type) {
 	case []string:
 		parsed = append(parsed, v...)
@@ -274,7 +244,8 @@ func controlIDsFromMetadata(metadata map[string]any) []string {
 	return deduped
 }
 
-func (as *APIStorage) resolveLegacyControlIDs(result *config.Result) []string {
+// resolveControlIDsFromReferences resolves control IDs from standard/control_ref values.
+func (as *APIStorage) resolveControlIDsFromReferences(ctx context.Context, result *config.Result) []string {
 	if result == nil || as.apiClient == nil {
 		return nil
 	}
@@ -304,14 +275,14 @@ func (as *APIStorage) resolveLegacyControlIDs(result *config.Result) []string {
 		return nil
 	}
 
-	controlIDs, err := as.apiClient.ResolveControlIDs([]config.ComplianceStandard{
+	controlIDs, err := as.apiClient.ResolveControlIDs(ctx, []config.ComplianceStandard{
 		{
 			Standard: standard,
 			Controls: []string{controlRef},
 		},
 	})
 	if err != nil {
-		log.Warn().Err(err).Str("standard", standard).Str("control_ref", controlRef).Str("check", result.CheckName).Msg("Failed to resolve legacy control reference")
+		log.Warn().Err(err).Str("standard", standard).Str("control_ref", controlRef).Str("check", result.CheckName).Msg("Failed to resolve control reference")
 		return nil
 	}
 

@@ -13,7 +13,7 @@ func WithConfig(cfg *config.Config) AgentOption {
 	}
 }
 
-// WithPollInterval sets the polling interval for the agent
+// WithPollInterval sets the local schedule scan interval for the agent
 func WithPollInterval(interval time.Duration) AgentOption {
 	return func(a *Agent) {
 		a.config.PollInterval = interval
@@ -85,10 +85,10 @@ func WithIdentity(enabled bool, cacheTimeout time.Duration, fallbackToHostname b
 }
 
 // WithAPIConnection configures API connection settings
-func WithAPIConnection(apiURL, registrationToken string) AgentOption {
+func WithAPIConnection(apiURL, apiToken string) AgentOption {
 	return func(a *Agent) {
 		a.config.APIURL = apiURL
-		a.config.RegistrationToken = registrationToken
+		a.config.APIToken = apiToken
 	}
 }
 

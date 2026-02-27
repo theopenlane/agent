@@ -2,340 +2,152 @@ package api
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/rs/zerolog/log"
-	"github.com/theopenlane/core/common/enums"
-	coremodels "github.com/theopenlane/core/common/models"
+	"github.com/samber/lo"
 	openlane "github.com/theopenlane/go-client"
 	"github.com/theopenlane/go-client/graphclient"
 
 	"github.com/theopenlane/agent/config"
-	"github.com/theopenlane/agent/internal/constants"
 	agentmodels "github.com/theopenlane/agent/internal/models"
 	"github.com/theopenlane/agent/internal/retry"
 )
 
-// GraphQLClient handles GraphQL communication with the Openlane platform
+const (
+	// controlLookupPageSize is the page size used when querying controls from the API
+	controlLookupPageSize = int64(20)
+)
+
+// controlCache stores resolved control reference codes to IDs to avoid repeated API calls
+type controlCache struct {
+	mu      sync.RWMutex
+	entries map[string]string
+}
+
+// key returns the cache key for a standard ID and control reference code
+func (c *controlCache) key(standardID, refCode string) string {
+	return standardID + ":" + strings.ToLower(refCode)
+}
+
+// get returns a cached control ID, or empty string if not found
+func (c *controlCache) get(standardID, refCode string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	id, ok := c.entries[c.key(standardID, refCode)]
+
+	return id, ok
+}
+
+// set stores a control ID in the cache
+func (c *controlCache) set(standardID, refCode, id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.entries[c.key(standardID, refCode)] = id
+}
+
+// GraphQLClient handles API communication with the Openlane platform
 type GraphQLClient struct {
-	client            *openlane.Client
-	registrationToken string
-	agentID           string
-	userAgent         string
-	retryManager      *retry.Manager
+	client       *openlane.Client
+	retryManager *retry.Manager
+	cache        *controlCache
 }
 
 // NewGraphQLClient creates a new GraphQL client
-func NewGraphQLClient(baseURL, registrationToken string) (*GraphQLClient, error) {
-	return NewGraphQLClientWithRetry(baseURL, registrationToken, nil)
+func NewGraphQLClient(baseURL, apiToken string) (*GraphQLClient, error) {
+	return NewGraphQLClientWithRetry(baseURL, apiToken, "", nil)
 }
 
-// NewGraphQLClientWithRetry creates a new GraphQL client with retry configuration
-func NewGraphQLClientWithRetry(baseURL, registrationToken string, retryManager *retry.Manager) (*GraphQLClient, error) {
-	if baseURL == "" {
+// NewGraphQLClientWithOrgID creates a new GraphQL client scoped to an organization
+func NewGraphQLClientWithOrgID(baseURL, apiToken, orgID string) (*GraphQLClient, error) {
+	return NewGraphQLClientWithRetry(baseURL, apiToken, orgID, nil)
+}
+
+// NewGraphQLClientWithRetry creates a new GraphQL client with optional org scoping and retry configuration
+func NewGraphQLClientWithRetry(baseURL, apiToken, orgID string, retryManager *retry.Manager) (*GraphQLClient, error) {
+	if strings.TrimSpace(baseURL) == "" {
 		return nil, ErrBaseURLRequired
 	}
 
-	if registrationToken == "" {
-		return nil, ErrRegistrationTokenRequired
+	if strings.TrimSpace(apiToken) == "" {
+		return nil, ErrAPITokenRequired
 	}
 
-	client, err := openlane.New(
+	opts := []openlane.ClientOption{
 		openlane.WithBaseURL(baseURL),
-		openlane.WithAPIToken(registrationToken),
-	)
+		openlane.WithAPIToken(apiToken),
+	}
+
+	if strings.TrimSpace(orgID) != "" {
+		opts = append(opts, openlane.WithInterceptors(openlane.WithOrganizationHeader(orgID)))
+	}
+
+	client, err := openlane.New(opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create openlane client: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrClientCreationFailed, err)
 	}
 
 	return &GraphQLClient{
-		client:            client,
-		registrationToken: registrationToken,
-		userAgent:         constants.UserAgent(),
-		retryManager:      retryManager,
+		client:       client,
+		retryManager: retryManager,
+		cache:        &controlCache{entries: make(map[string]string)},
 	}, nil
 }
 
-// RegisterAgent registers the agent as a JobRunner using GraphQL
-func (c *GraphQLClient) RegisterAgent(ctx context.Context, registration JobRunnerRegistration) (*graphclient.JobRunner, error) {
-	log.Debug().Str("name", registration.Name).Msg("Registering agent")
-
-	input := graphclient.CreateJobRunnerInput{
-		Name: registration.Name,
-		Tags: registration.Tags,
-	}
-	if registration.IPAddress != "" {
-		input.IPAddress = &registration.IPAddress
-	}
-
-	if registration.Version != "" {
-		input.Version = &registration.Version
-	}
-
-	if registration.Platform != "" {
-		input.Os = &registration.Platform
-	}
-
-	now := time.Now().UTC()
-	input.LastSeen = &now
-
-	var resp *graphclient.CreateJobRunner
-
-	err := c.executeWithRetry(ctx, func(ctx context.Context) error {
-		var execErr error
-
-		resp, execErr = c.client.CreateJobRunner(ctx, input)
-
-		return execErr
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrAgentRegistrationFailed, err)
-	}
-
-	c.agentID = resp.CreateJobRunner.JobRunner.ID
-
-	log.Info().Str("id", resp.CreateJobRunner.JobRunner.ID).Msg("Agent registered")
-
-	jr := &graphclient.JobRunner{
-		ID:        resp.CreateJobRunner.JobRunner.ID,
-		Name:      resp.CreateJobRunner.JobRunner.Name,
-		Status:    resp.CreateJobRunner.JobRunner.Status,
-		IPAddress: resp.CreateJobRunner.JobRunner.IPAddress,
-		CreatedAt: resp.CreateJobRunner.JobRunner.CreatedAt,
-		UpdatedAt: resp.CreateJobRunner.JobRunner.UpdatedAt,
-	}
-
-	return jr, nil
+// NewGraphQLClientFromConfig creates a GraphQL client from agent configuration
+func NewGraphQLClientFromConfig(cfg *config.Config, retryManager *retry.Manager) (*GraphQLClient, error) {
+	return NewGraphQLClientWithRetry(cfg.APIURL, cfg.Token(), cfg.OrgID, retryManager)
 }
 
-// PollForWork polls for scheduled jobs assigned to this agent
-func (c *GraphQLClient) PollForWork(ctx context.Context) ([]*graphclient.ScheduledJob, error) {
-	if c.agentID == "" {
-		return nil, ErrAgentNotRegistered
-	}
-
-	where := &graphclient.ScheduledJobWhereInput{
-		JobRunnerID: &c.agentID,
-		Active:      &[]bool{true}[0],
-	}
-
-	resp, err := c.client.GetScheduledJobs(ctx, nil, nil, nil, nil, where, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrPollForWorkFailed, err)
-	}
-
-	var scheduledJobs []*graphclient.ScheduledJob
-
-	for _, edge := range resp.ScheduledJobs.Edges {
-		sj := &graphclient.ScheduledJob{
-			ID:            edge.Node.ID,
-			Active:        edge.Node.Active,
-			Configuration: edge.Node.Configuration,
-			Cron:          edge.Node.Cron,
-			JobID:         edge.Node.JobID,
-			JobRunnerID:   edge.Node.JobRunnerID,
-			OwnerID:       edge.Node.OwnerID,
-		}
-
-		scheduledJobs = append(scheduledJobs, sj)
-	}
-
-	log.Debug().Int("count", len(scheduledJobs)).Msg("Polled scheduled jobs")
-
-	return scheduledJobs, nil
-}
-
-// ReportResults sends compliance check results to the platform as JobResult entities
-func (c *GraphQLClient) ReportResults(ctx context.Context, results []*config.Result) error {
-	if len(results) == 0 {
-		return nil
-	}
-
-	var reportErrors []error
-
-	for _, result := range results {
-		if err := c.createJobResult(ctx, result); err != nil {
-			log.Error().Err(err).Str("check", result.CheckName).Msg("Failed to create job result")
-			reportErrors = append(reportErrors, err)
-			continue
-		}
-
-		exitCode := 0
-		if result.ExitCode != nil {
-			exitCode = *result.ExitCode
-		}
-
-		log.Info().Str("check", result.CheckName).Int("exit_code", exitCode).Msg("Result reported")
-	}
-
-	if len(reportErrors) > 0 {
-		return fmt.Errorf("failed to report %d of %d results: %w", len(reportErrors), len(results), errors.Join(reportErrors...))
-	}
-
-	log.Info().Int("count", len(results)).Msg("All results reported")
-
-	return nil
-}
-
-// createJobResult creates a JobResult entity for a compliance check result
-func (c *GraphQLClient) createJobResult(ctx context.Context, result *config.Result) error {
-	status := result.Status
-
-	scheduledJobID := ""
-
-	var ownerID *string
-
-	if result.Metadata != nil {
-		if jobID, ok := result.Metadata["scheduled_job_id"].(string); ok {
-			scheduledJobID = jobID
-		}
-
-		if ownerIDStr, ok := result.Metadata["owner_id"].(string); ok {
-			ownerID = &ownerIDStr
-		}
-	}
-
-	if scheduledJobID == "" {
-		log.Debug().Str("check", result.CheckName).Msg("No scheduled job ID, skipping JobResult creation (manual check)")
-		return nil
-	}
-
-	var exitCode int64
-
-	if result.ExitCode != nil {
-		exitCode = int64(*result.ExitCode)
-	}
-
-	input := graphclient.CreateJobResultInput{
-		ScheduledJobID: scheduledJobID,
-		Status:         status,
-		ExitCode:       exitCode,
-		FileID:         "",
-		StartedAt:      &result.StartedAt,
-		FinishedAt:     &result.FinishedAt,
-		Log:            &result.Log,
-		OwnerID:        ownerID,
-	}
-
-	var uploads []*graphql.Upload
-	if resultFile := PrepareResultFileUpload(result); resultFile != nil {
-		uploads = append(uploads, resultFile)
-	}
-
-	resp, err := c.client.CreateJobResult(ctx, input, uploads)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrJobResultCreationFailed, err)
-	}
-
-	if resp != nil {
-		if result.Metadata == nil {
-			result.Metadata = make(map[string]any)
-		}
-
-		result.Metadata["job_result_id"] = resp.CreateJobResult.JobResult.ID
-		log.Debug().Str("job_result_id", resp.CreateJobResult.JobResult.ID).Bool("has_file", len(uploads) > 0).Msg("Created job result")
-	}
-
-	return nil
-}
-
-// SetTimeout stores a timeout setting for the GraphQL client
-func (c *GraphQLClient) SetTimeout(timeout time.Duration) {
-	log.Debug().Dur("timeout", timeout).Msg("GraphQL timeout setting requested - stored for future HTTP client configuration")
-}
-
-// GetAgentID returns the registered agent ID
-func (c *GraphQLClient) GetAgentID() string {
-	return c.agentID
-}
-
-// SetAgentID sets the agent ID
-func (c *GraphQLClient) SetAgentID(agentID string) {
-	c.agentID = agentID
-}
-
-// GetClient returns the underlying openlane Client for direct API calls
+// GetClient returns the underlying openlane client for direct API calls
 func (c *GraphQLClient) GetClient() *openlane.Client {
 	return c.client
 }
 
-// GetAllControls retrieves all controls from the Openlane system
-func (c *GraphQLClient) GetAllControls(ctx context.Context) ([]*graphclient.Control, error) {
-	resp, err := c.client.GetAllControls(ctx, nil, nil, nil, nil, nil)
+// Health checks API connectivity using a lightweight controls query
+func (c *GraphQLClient) Health(ctx context.Context) error {
+	limit := int64(1)
+
+	_, err := c.client.GetAllControls(ctx, &limit, nil, nil, nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrControlsRetrievalFailed, err)
+		return fmt.Errorf("%w: %w", ErrHealthCheckFailed, err)
 	}
-
-	var controls []*graphclient.Control
-
-	for _, edge := range resp.Controls.Edges {
-		control := &graphclient.Control{
-			ID:                 edge.Node.ID,
-			CreatedAt:          edge.Node.CreatedAt,
-			UpdatedAt:          edge.Node.UpdatedAt,
-			RefCode:            edge.Node.RefCode,
-			ReferenceFramework: edge.Node.ReferenceFramework,
-			StandardID:         edge.Node.StandardID,
-		}
-
-		controls = append(controls, control)
-	}
-
-	log.Debug().Int("count", len(controls)).Msg("Retrieved controls with standard relationships")
-
-	return controls, nil
-}
-
-// UpdateControl updates a control in the Openlane system
-func (c *GraphQLClient) UpdateControl(ctx context.Context, controlID string, input graphclient.UpdateControlInput) error {
-	_, err := c.client.UpdateControl(ctx, controlID, input)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrControlUpdateFailed, err)
-	}
-
-	log.Debug().Str("control_id", controlID).Msg("Updated control")
 
 	return nil
 }
 
-// UpdateJobRunner updates a job runner (used for heartbeats)
-func (c *GraphQLClient) UpdateJobRunner(ctx context.Context, jobRunnerID string, input graphclient.UpdateJobRunnerInput) (*graphclient.JobRunner, error) {
-	resp, err := c.client.UpdateJobRunner(ctx, jobRunnerID, input)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrJobRunnerUpdateFailed, err)
-	}
-
-	jr := &graphclient.JobRunner{
-		ID:        resp.UpdateJobRunner.JobRunner.ID,
-		Name:      resp.UpdateJobRunner.JobRunner.Name,
-		Status:    resp.UpdateJobRunner.JobRunner.Status,
-		IPAddress: resp.UpdateJobRunner.JobRunner.IPAddress,
-		CreatedAt: resp.UpdateJobRunner.JobRunner.CreatedAt,
-		UpdatedAt: resp.UpdateJobRunner.JobRunner.UpdatedAt,
-	}
-
-	return jr, nil
-}
-
 // ValidateControls validates that controls exist within their specified standards
-func (c *GraphQLClient) ValidateControls(standards []config.ComplianceStandard) (map[string][]string, error) {
+func (c *GraphQLClient) ValidateControls(ctx context.Context, standards []config.ComplianceStandard) (map[string][]string, error) {
 	validControls := make(map[string][]string)
 
 	for _, standard := range standards {
-		if err := c.validateStandard(standard.Standard); err != nil {
-			log.Error().Err(err).Str("standard", standard.Standard).Msg("Standard validation failed")
+		if err := c.validateStandard(ctx, standard.Standard); err != nil {
+			switch {
+			case IsNotFoundError(err):
+				log.Warn().Str("standard", standard.Standard).Msg("Standard not found in API")
+			default:
+				log.Error().Err(err).Str("standard", standard.Standard).Msg("Standard validation failed")
+			}
+
 			continue
 		}
 
 		for _, control := range standard.Controls {
-			if err := c.validateControl(standard.Standard, control); err != nil {
-				log.Error().Err(err).Str("standard", standard.Standard).Str("control", control).Msg("Control validation failed")
+			if err := c.validateControl(ctx, standard.Standard, control); err != nil {
+				switch {
+				case IsNotFoundError(err):
+					log.Warn().Str("standard", standard.Standard).Str("control", control).Msg("Control not found in API")
+				default:
+					log.Error().Err(err).Str("standard", standard.Standard).Str("control", control).Msg("Control validation failed")
+				}
+
 				continue
 			}
 
@@ -350,22 +162,22 @@ func (c *GraphQLClient) ValidateControls(standards []config.ComplianceStandard) 
 	return validControls, nil
 }
 
-// ResolveControlIDs resolves control reference codes to control IDs for evidence associations.
-func (c *GraphQLClient) ResolveControlIDs(standards []config.ComplianceStandard) ([]string, error) {
+// ResolveControlIDs resolves control reference codes to control IDs for evidence associations
+func (c *GraphQLClient) ResolveControlIDs(ctx context.Context, standards []config.ComplianceStandard) ([]string, error) {
 	controlIDs := make(map[string]struct{})
 
-	var resolveErrors []error
+	var resolveErrors []string
 
 	for _, standard := range standards {
-		if err := c.validateStandard(standard.Standard); err != nil {
-			resolveErrors = append(resolveErrors, err)
+		if err := c.validateStandard(ctx, standard.Standard); err != nil {
+			resolveErrors = append(resolveErrors, err.Error())
 			continue
 		}
 
 		for _, controlRef := range standard.Controls {
-			controlID, err := c.lookupControlID(standard.Standard, controlRef)
+			controlID, err := c.lookupControlID(ctx, standard.Standard, controlRef)
 			if err != nil {
-				resolveErrors = append(resolveErrors, err)
+				resolveErrors = append(resolveErrors, err.Error())
 				continue
 			}
 
@@ -381,51 +193,47 @@ func (c *GraphQLClient) ResolveControlIDs(standards []config.ComplianceStandard)
 	slices.Sort(resolved)
 
 	if len(resolveErrors) > 0 && len(resolved) == 0 {
-		return resolved, fmt.Errorf("failed to resolve control IDs: %w", errors.Join(resolveErrors...))
+		return resolved, fmt.Errorf("%w: %s", ErrControlIDResolutionFailed, strings.Join(resolveErrors, "; "))
 	}
 
 	return resolved, nil
 }
 
 // validateStandard validates that a compliance standard exists
-func (c *GraphQLClient) validateStandard(standardID string) error {
-	ctx := context.Background()
-
+func (c *GraphQLClient) validateStandard(ctx context.Context, standardID string) error {
 	standard, err := c.client.GetStandardByID(ctx, standardID)
 	if err != nil {
-		log.Error().Err(err).Str("standard", standardID).Msg("Failed to validate standard")
-		return fmt.Errorf("failed to validate standard %s: %w", standardID, err)
+		return fmt.Errorf("validate standard %s: %w", standardID, err)
 	}
 
 	if standard == nil {
-		log.Error().Str("standard", standardID).Msg("Standard not found")
 		return fmt.Errorf("%w: %s", ErrStandardNotFound, standardID)
 	}
-
-	log.Debug().Str("standard", standardID).Str("name", standard.Standard.Name).Msg("Standard validated successfully")
 
 	return nil
 }
 
 // validateControl validates that a control exists within a standard
-func (c *GraphQLClient) validateControl(standardID, controlRefCode string) error {
-	if _, err := c.lookupControlID(standardID, controlRefCode); err != nil {
-		log.Error().Err(err).Str("standard", standardID).Str("control", controlRefCode).Msg("Failed to validate control")
-		return fmt.Errorf("failed to validate control %s in standard %s: %w", controlRefCode, standardID, err)
+func (c *GraphQLClient) validateControl(ctx context.Context, standardID, controlRefCode string) error {
+	if _, err := c.lookupControlID(ctx, standardID, controlRefCode); err != nil {
+		return fmt.Errorf("validate control %s in standard %s: %w", controlRefCode, standardID, err)
 	}
-
-	log.Debug().Str("standard", standardID).Str("control", controlRefCode).Msg("Control validated successfully")
 
 	return nil
 }
 
-// lookupControlID resolves a control reference within a standard to its control ID.
-func (c *GraphQLClient) lookupControlID(standardID, controlRefCode string) (string, error) {
-	ctx := context.Background()
+// lookupControlID resolves a control reference within a standard to its control ID;
+// results are cached to avoid redundant API calls within the same session
+func (c *GraphQLClient) lookupControlID(ctx context.Context, standardID, controlRefCode string) (string, error) {
+	if id, ok := c.cache.get(standardID, controlRefCode); ok {
+		return id, nil
+	}
 
-	response, err := c.client.GetControls(ctx, nil, nil, nil, nil, &graphclient.ControlWhereInput{
-		StandardID: &standardID,
-		RefCode:    &controlRefCode,
+	pageSize := controlLookupPageSize
+
+	response, err := c.client.GetControls(ctx, &pageSize, nil, nil, nil, &graphclient.ControlWhereInput{
+		StandardID:       &standardID,
+		RefCodeEqualFold: lo.ToPtr(controlRefCode),
 	}, nil)
 	if err != nil {
 		return "", fmt.Errorf("query control %s in standard %s: %w", controlRefCode, standardID, err)
@@ -435,19 +243,20 @@ func (c *GraphQLClient) lookupControlID(standardID, controlRefCode string) (stri
 		return "", fmt.Errorf("%w: %s in standard %s", ErrControlNotFound, controlRefCode, standardID)
 	}
 
-	return response.Controls.Edges[0].Node.ID, nil
+	id := response.Controls.Edges[0].Node.ID
+	c.cache.set(standardID, controlRefCode, id)
+
+	return id, nil
 }
 
-// CreateEvidence creates evidence with optional control associations using GraphQL mutation
-func (c *GraphQLClient) CreateEvidence(controlIDs []string, evidence agentmodels.EvidenceFile, jobResultID string) error {
-	ctx := context.Background()
-
+// CreateEvidence uploads evidence with optional control associations
+func (c *GraphQLClient) CreateEvidence(ctx context.Context, controlIDs []string, evidence agentmodels.EvidenceFile, runArtifactID string) error {
 	isAutomated := true
 	creationTime := evidence.CreatedAt
-
 	evidenceName := strings.TrimPrefix(evidence.Path, "./")
+
 	if evidenceName == "" {
-		evidenceName = "evidence-" + jobResultID
+		evidenceName = "evidence-" + runArtifactID
 	}
 
 	description := fmt.Sprintf("Evidence collected by agent from %s", evidence.Path)
@@ -462,14 +271,12 @@ func (c *GraphQLClient) CreateEvidence(controlIDs []string, evidence agentmodels
 		Source:              &source,
 		IsAutomated:         &isAutomated,
 		ControlIDs:          controlIDs,
-		Tags:                []string{"automated", "agent-collected", fmt.Sprintf("job-result:%s", jobResultID)},
+		Tags:                []string{"automated", "agent-collected", fmt.Sprintf("run:%s", runArtifactID)},
 	}
 
 	var uploads []*graphql.Upload
-
 	if len(evidence.Content) > 0 {
-		upload := PrepareEvidenceFileUpload(evidence)
-		uploads = append(uploads, upload)
+		uploads = append(uploads, PrepareEvidenceFileUpload(evidence))
 	}
 
 	var resp *graphclient.CreateEvidence
@@ -482,61 +289,27 @@ func (c *GraphQLClient) CreateEvidence(controlIDs []string, evidence agentmodels
 		return execErr
 	})
 	if err != nil {
-		controlIDsStr := "none"
-		if len(controlIDs) > 0 {
-			controlIDsStr = strings.Join(controlIDs, ", ")
-		}
-
-		log.Error().Err(err).Str("controls", controlIDsStr).Str("evidence_path", evidence.Path).Msg("Failed to create evidence")
+		log.Error().Err(err).Str("controls", controlsLabel(controlIDs)).Str("evidence_path", evidence.Path).Msg("Failed to create evidence")
 
 		return fmt.Errorf("%w: %w", ErrEvidenceCreationFailed, err)
 	}
 
-	controlIDsStr := "none"
-	if len(controlIDs) > 0 {
-		controlIDsStr = strings.Join(controlIDs, ", ")
-	}
-
-	log.Info().Str("controls", controlIDsStr).Str("evidence_id", resp.CreateEvidence.Evidence.ID).Str("evidence_path", evidence.Path).Msg("Evidence created")
+	log.Info().Str("controls", controlsLabel(controlIDs)).Str("evidence_id", resp.CreateEvidence.Evidence.ID).Str("evidence_path", evidence.Path).Msg("Evidence created")
 
 	return nil
 }
 
-// CreateEvidenceForControl creates evidence directly associated with a control
-func (c *GraphQLClient) CreateEvidenceForControl(controlID string, evidence agentmodels.EvidenceFile, jobResultID string) error {
-	return c.CreateEvidence([]string{controlID}, evidence, jobResultID)
+// CreateEvidenceForControl creates evidence directly associated with a single control
+func (c *GraphQLClient) CreateEvidenceForControl(ctx context.Context, controlID string, evidence agentmodels.EvidenceFile, runArtifactID string) error {
+	return c.CreateEvidence(ctx, []string{controlID}, evidence, runArtifactID)
 }
 
-// UpdateAgentStatus updates the agent's status and metadata in the JobRunner
-func (c *GraphQLClient) UpdateAgentStatus(ctx context.Context, agentID string, status AgentStatus) error {
-	input := graphclient.UpdateJobRunnerInput{
-		LastSeen: &status.LastPing,
-	}
-
-	if status.SystemInfo.OS != "" {
-		input.Os = &status.SystemInfo.OS
-	}
-
-	if status.Version != "" {
-		input.Version = &status.Version
-	}
-
-	if status.IPAddress != "" {
-		input.IPAddress = &status.IPAddress
-	}
-
-	_, err := c.UpdateJobRunner(ctx, agentID, input)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to update job runner")
-		return fmt.Errorf("%w: %w", ErrAgentStatusUpdateFailed, err)
-	}
-
-	log.Info().Str("agent_status", status.Status).Str("version", status.Version).Str("ip_address", status.IPAddress).Msg("Job runner updated with agent status")
-
-	return nil
+// SetTimeout stores a timeout duration for future HTTP client configuration
+func (c *GraphQLClient) SetTimeout(timeout time.Duration) {
+	log.Debug().Dur("timeout", timeout).Msg("GraphQL timeout setting stored for future HTTP client configuration")
 }
 
-// executeWithRetry is a helper method that wraps operations with retry logic when available
+// executeWithRetry wraps an operation with retry logic when a retry manager is configured
 func (c *GraphQLClient) executeWithRetry(ctx context.Context, operation func(context.Context) error) error {
 	if c.retryManager != nil {
 		return c.retryManager.ExecuteWithContext(ctx, operation)
@@ -545,103 +318,11 @@ func (c *GraphQLClient) executeWithRetry(ctx context.Context, operation func(con
 	return operation(ctx)
 }
 
-// SyncJobTemplates ensures JobTemplates exist for all checks and returns their IDs
-func (c *GraphQLClient) SyncJobTemplates(ctx context.Context, checks []*config.Check) (map[string]string, error) {
-	if c.agentID == "" {
-		return nil, ErrAgentNotRegistered
+// controlsLabel formats a slice of control IDs for log output
+func controlsLabel(controlIDs []string) string {
+	if len(controlIDs) == 0 {
+		return "none"
 	}
 
-	templateIDs := make(map[string]string)
-
-	for _, check := range checks {
-		templateID, err := c.syncJobTemplate(ctx, check)
-		if err != nil {
-			log.Error().Err(err).Str("check", check.Name).Msg("Failed to sync job template")
-			continue
-		}
-
-		templateIDs[check.Name] = templateID
-		log.Debug().Str("check", check.Name).Str("template_id", templateID).Msg("Job template synced")
-	}
-
-	log.Info().Int("count", len(templateIDs)).Msg("Job templates synced")
-
-	return templateIDs, nil
-}
-
-// syncJobTemplate creates or retrieves a JobTemplate for a check
-func (c *GraphQLClient) syncJobTemplate(ctx context.Context, check *config.Check) (string, error) {
-	templateID, err := c.createJobTemplate(ctx, check)
-	if err != nil {
-		log.Warn().Err(err).Str("check", check.Name).Msg("Failed to sync job template - scheduled job creation will be skipped")
-		return "", nil
-	}
-
-	if templateID == "" {
-		log.Warn().Str("check", check.Name).Msg("Job template created but ID is empty - scheduled job creation will be skipped")
-	}
-
-	return templateID, nil
-}
-
-// createJobTemplate creates a new JobTemplate from a check configuration
-func (c *GraphQLClient) createJobTemplate(ctx context.Context, check *config.Check) (string, error) {
-	checkJSON, err := json.Marshal(check)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal check configuration: %w", err)
-	}
-
-	// Every 30 minutes - placeholder for server validation
-	cron := "0 */30 * * * *"
-
-	downloadURL := ""
-
-	input := graphclient.CreateJobTemplateInput{
-		Title:         check.Name,
-		Description:   &check.Description,
-		Platform:      enums.JobPlatformTypeGo,
-		DownloadURL:   downloadURL,
-		Configuration: coremodels.JobConfiguration(checkJSON),
-		Cron:          &cron,
-		Tags:          check.Tags,
-	}
-
-	resp, err := c.client.CreateJobTemplate(ctx, input)
-	if err != nil {
-		return "", fmt.Errorf("failed to create job template: %w", err)
-	}
-
-	templateID := resp.CreateJobTemplate.JobTemplate.ID
-
-	log.Debug().Str("template_id", templateID).Msg("CreateJobTemplate response received")
-
-	queryResp, queryErr := c.client.GetJobTemplates(ctx, nil, nil, nil, nil, &graphclient.JobTemplateWhereInput{
-		Title: &check.Name,
-	}, nil)
-	if queryErr != nil {
-		log.Warn().Err(queryErr).Msg("Failed to query for job template after creation")
-	} else if queryResp != nil && len(queryResp.JobTemplates.Edges) > 0 {
-		queriedTemplate := queryResp.JobTemplates.Edges[0].Node
-		log.Debug().
-			Str("queried_id", queriedTemplate.ID).
-			Str("queried_title", queriedTemplate.Title).
-			Str("queried_display_id", queriedTemplate.DisplayID).
-			Str("queried_platform", string(queriedTemplate.Platform)).
-			Int("queried_config_len", len(queriedTemplate.Configuration)).
-			Msg("GetJobTemplates query result after creation")
-
-		if templateID == "" && queriedTemplate.ID != "" {
-			log.Info().Str("check", check.Name).Str("template_id", queriedTemplate.ID).Msg("Using template ID from query since create response was empty")
-			return queriedTemplate.ID, nil
-		}
-	}
-
-	if templateID == "" {
-		log.Warn().Str("check", check.Name).Msg("JobTemplate ID is empty after deserialization")
-		return "", nil
-	}
-
-	log.Info().Str("check", check.Name).Str("template_id", templateID).Msg("Created job template")
-
-	return templateID, nil
+	return strings.Join(controlIDs, ", ")
 }

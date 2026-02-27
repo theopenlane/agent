@@ -22,11 +22,16 @@ type Manager struct {
 
 // Config defines retry behavior settings
 type Config struct {
-	MaxAttempts  uint          `json:"maxAttempts" koanf:"maxAttempts" default:"5" description:"Maximum number of retry attempts"`
+	// MaxAttempts is the maximum number of retry attempts
+	MaxAttempts uint `json:"maxAttempts" koanf:"maxAttempts" default:"5" description:"Maximum number of retry attempts"`
+	// InitialDelay is the initial delay duration between retry attempts
 	InitialDelay time.Duration `json:"initialDelay" koanf:"initialDelay" default:"1s" description:"Initial delay between retries"`
-	MaxDelay     time.Duration `json:"maxDelay" koanf:"maxDelay" default:"30s" description:"Maximum delay between retries"`
-	Strategy     string        `json:"strategy" koanf:"strategy" default:"exponential" description:"Retry strategy: exponential, linear, random"`
-	Multiplier   float64       `json:"multiplier" koanf:"multiplier" default:"2.0" description:"Backoff multiplier for exponential strategy"`
+	// MaxDelay is the maximum delay duration between retry attempts
+	MaxDelay time.Duration `json:"maxDelay" koanf:"maxDelay" default:"30s" description:"Maximum delay between retries"`
+	// Strategy is the retry backoff strategy: exponential, linear, or random
+	Strategy string `json:"strategy" koanf:"strategy" default:"exponential" description:"Retry strategy: exponential, linear, random"`
+	// Multiplier is the backoff multiplier applied for the exponential strategy
+	Multiplier float64 `json:"multiplier" koanf:"multiplier" default:"2.0" description:"Backoff multiplier for exponential strategy"`
 }
 
 // Operation represents a retryable operation
@@ -134,16 +139,14 @@ func (m *Manager) delayTypeForStrategy(initialBackoff, maxBackoff time.Duration)
 		}
 	case "random":
 		return func(attempt uint, _ error, _ *retry.Config) time.Duration {
-			upperBound := time.Duration(float64(initialBackoff) * math.Pow(multiplier, float64(attempt+1)))
-			if upperBound > maxBackoff {
-				upperBound = maxBackoff
-			}
+			upperBound := min(time.Duration(float64(initialBackoff)*math.Pow(multiplier, float64(attempt+1))), maxBackoff)
 
 			if upperBound <= initialBackoff {
 				return initialBackoff
 			}
 
 			jitterRange := float64(upperBound - initialBackoff)
+
 			return initialBackoff + time.Duration(rand.Float64()*jitterRange) //nolint:gosec
 		}
 	case "exponential":

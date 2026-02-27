@@ -7,11 +7,9 @@ import (
 )
 
 var (
-	// AgentVersion is the version of the application. Note that this is
-	// set at compile time using ldflags.
+	// AgentVersion is the version of the application; set at compile time using ldflags
 	AgentVersion = "no-info"
-	// VerboseAgentVersion is the verbose version of the application.
-	// Note that this is set up at init time.
+	// VerboseAgentVersion is the verbose version of the application; set at init time
 	VerboseAgentVersion = ""
 )
 

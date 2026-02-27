@@ -6,6 +6,7 @@ require (
 	github.com/99designs/gqlgen v0.17.86
 	github.com/codeGROOVE-dev/retry v1.2.0
 	github.com/google/uuid v1.6.0
+	github.com/gqlgo/gqlgenc v0.33.1
 	github.com/invopop/jsonschema v0.13.0
 	github.com/invopop/yaml v0.3.1
 	github.com/knadh/koanf/parsers/yaml v1.1.0
@@ -13,13 +14,16 @@ require (
 	github.com/knadh/koanf/providers/file v1.2.0
 	github.com/knadh/koanf/v2 v2.3.2
 	github.com/mcuadros/go-defaults v1.2.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.34.0
+	github.com/samber/lo v1.52.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.0
 	github.com/stretchr/testify v1.11.1
 	github.com/theopenlane/core/common v1.0.10
 	github.com/theopenlane/go-client v0.8.5
 	github.com/theopenlane/utils v0.7.0
 	github.com/urfave/cli/v3 v3.6.2
+	github.com/vektah/gqlparser/v2 v2.5.31
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -42,7 +46,6 @@ require (
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
-	github.com/gqlgo/gqlgenc v0.33.1 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/httpcc v1.0.1 // indirect
@@ -59,8 +62,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/redis/go-redis/v9 v9.17.3 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
-	github.com/samber/lo v1.52.0 // indirect
 	github.com/samber/mo v1.16.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sosodev/duration v1.3.1 // indirect
@@ -70,7 +71,6 @@ require (
 	github.com/theopenlane/iam v0.24.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
-	github.com/vektah/gqlparser/v2 v2.5.31 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect

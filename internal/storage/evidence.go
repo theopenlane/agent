@@ -16,9 +16,13 @@ import (
 
 // EvidenceConfig contains evidence-specific configuration
 type EvidenceConfig struct {
-	Enabled         bool
-	DataDir         string
-	MaxFileSize     int64
+	// Enabled indicates whether evidence collection is active
+	Enabled bool
+	// DataDir is the base directory for storing evidence files
+	DataDir string
+	// MaxFileSize is the maximum allowed size in bytes for a single evidence file
+	MaxFileSize int64
+	// RetentionPeriod is the duration to retain evidence files before pruning
 	RetentionPeriod time.Duration
 }
 
@@ -62,8 +66,6 @@ func (es *EvidenceService) CollectEvidence(ctx context.Context, paths []string) 
 
 		evidenceFiles = append(evidenceFiles, files...)
 	}
-
-	log.Debug().Int("files", len(evidenceFiles)).Strs("paths", paths).Msg("Evidence collection completed")
 
 	return evidenceFiles, nil
 }

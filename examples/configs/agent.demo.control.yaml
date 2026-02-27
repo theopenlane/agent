@@ -1,4 +1,4 @@
-registrationToken: "tola_COp43qs1jnRIDVARkbXex5iddnNryP8z4mZo11Q5XLxCrNhwGmLVyOUpW0IYWYdX"
+token: "${OPENLANE_AGENT_TOKEN}"
 apiUrl: "http://localhost:17608"
 agentName: "agent-control-demo"
 logLevel: "debug"
@@ -7,7 +7,6 @@ pollInterval: "10s"
 spawn: 1
 maxConcurrency: 1
 defaultTimeout: "1m"
-enableRemotePoll: false
 
 offline:
   mode: "buffered"
@@ -31,7 +30,7 @@ checks:
     schedule: "*/5 * * * * *"
     timeout: "20s"
     enabled: true
-    compliance_standards:
-      - standard: "01KJEWZDT09PCGXDG8EA2KHX9Z"
+    complianceStandards:
+      - standard: "01KJFXPPVD3RY7W91A3J78WZP0"
         controls:
           - "OLAGENT-DEMO-CONTROL-001"

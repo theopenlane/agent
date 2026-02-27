@@ -15,25 +15,27 @@ const (
 	exampleSSHConfigLine = 32
 )
 
-// ComplianceCheckResult represents a simplified compliance check result
-// Designed to be compatible with core JobResult schema for future integration
+// ComplianceCheckResult represents a normalized compliance check result payload
 type ComplianceCheckResult struct {
-	// Basic identification - aligned with core patterns
-	CheckName  string    `json:"checkName" jsonschema:"required,description=Name of the compliance check"`
-	StartedAt  time.Time `json:"startedAt" jsonschema:"required,description=When the check execution started"`
+	// CheckName is the name of the compliance check that produced this result
+	CheckName string `json:"checkName" jsonschema:"required,description=Name of the compliance check"`
+	// StartedAt is the time at which check execution began
+	StartedAt time.Time `json:"startedAt" jsonschema:"required,description=When the check execution started"`
+	// FinishedAt is the time at which check execution completed
 	FinishedAt time.Time `json:"finishedAt" jsonschema:"required,description=When the check execution finished"`
-
-	// Compliance context - the core requirement
-	Standard   string `json:"standard" jsonschema:"required,description=Compliance standard identifier,example=soc2"`
+	// Standard is the compliance standard identifier (e.g. soc2, nist80053v5)
+	Standard string `json:"standard" jsonschema:"required,description=Compliance standard identifier,example=soc2"`
+	// ControlRef is the control reference code within the standard (e.g. CC6.1)
 	ControlRef string `json:"controlRef" jsonschema:"required,description=Control reference code,example=CC6.1"`
-
-	// Results - aligned with core JobResult fields
-	Status   enums.JobExecutionStatus `json:"status" jsonschema:"required,description=Execution status"`
-	ExitCode *int                     `json:"exitCode,omitempty" jsonschema:"description=Process exit code (null if not applicable),minimum=0"`
-
-	// Optional details
-	Log      string         `json:"log,omitempty" jsonschema:"description=Check output and logs"`
-	Error    string         `json:"error,omitempty" jsonschema:"description=Error message if check failed"`
+	// Status is the execution status of the check
+	Status enums.JobExecutionStatus `json:"status" jsonschema:"required,description=Execution status"`
+	// ExitCode is the process exit code; nil when not applicable
+	ExitCode *int `json:"exitCode,omitempty" jsonschema:"description=Process exit code (null if not applicable),minimum=0"`
+	// Log contains captured check output and log lines
+	Log string `json:"log,omitempty" jsonschema:"description=Check output and logs"`
+	// Error holds the error message when the check failed
+	Error string `json:"error,omitempty" jsonschema:"description=Error message if check failed"`
+	// Metadata holds additional key-value data attached to the result
 	Metadata map[string]any `json:"metadata,omitempty" jsonschema:"description=Additional metadata"`
 }
 

@@ -15,13 +15,18 @@ const (
 func OptionsFromConfig(cfg *config.Config) []Option {
 	var opts []Option
 
-	// Use buffered storage for all modes (consolidation)
-	opts = append(opts, WithAPIConfig(cfg.APIURL, cfg.RegistrationToken))
+	opts = append(opts, WithAPIConfig(cfg.APIURL, cfg.Token()))
 	opts = append(opts, WithBuffering(cfg.Offline.BufferDir))
+	opts = append(opts, func(c *Config) {
+		c.DataDir = cfg.DataDir
+		c.SyncInterval = cfg.Offline.SyncInterval
+		c.BufferRetentionPeriod = cfg.Offline.BufferRetentionPeriod
+		c.ConnectivityInterval = cfg.Offline.ConnectivityInterval
+	})
 
 	// Add retry configuration
 	if cfg.Offline.MaxRetries > 0 {
-		opts = append(opts, WithRetryPolicy(cfg.Offline.MaxRetries, 2*time.Minute)) // nolint:mnd
+		opts = append(opts, WithRetryPolicy(cfg.Offline.MaxRetries, defaultRetryBackoffMinutes*time.Minute))
 	}
 
 	// Add connectivity monitoring
@@ -43,8 +48,7 @@ func OptionsFromConfig(cfg *config.Config) []Option {
 
 // NewStorageFromConfig creates a storage instance from agent configuration
 func NewStorageFromConfig(cfg *config.Config) (Storage, error) {
-	opts := OptionsFromConfig(cfg)
-	return NewStorage(opts...)
+	return NewBufferedStorage(ConfigFromAgentConfig(cfg))
 }
 
 // ConfigFromAgentConfig converts agent config to storage config
@@ -53,8 +57,9 @@ func ConfigFromAgentConfig(cfg *config.Config) *Config {
 		DataDir: cfg.DataDir,
 
 		// API configuration
-		APIURL:            cfg.APIURL,
-		RegistrationToken: cfg.RegistrationToken,
+		APIURL:   cfg.APIURL,
+		APIToken: cfg.Token(),
+		OrgID:    cfg.OrgID,
 
 		// Buffering configuration
 		BufferDir:             cfg.Offline.BufferDir,

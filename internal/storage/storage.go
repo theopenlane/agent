@@ -9,12 +9,18 @@ import (
 
 // Result wraps a result with storage metadata for buffering
 type Result struct {
-	ID         string                `json:"id"`
-	Result     *config.Result        `json:"result"`
-	BufferedAt time.Time             `json:"bufferedAt"`
-	RetryCount int                   `json:"retryCount"`
-	LastError  string                `json:"lastError,omitempty"`
-	Evidence   []models.EvidenceFile `json:"evidence,omitempty"`
+	// ID is the unique identifier for this buffered result entry
+	ID string `json:"id"`
+	// Result is the compliance check result being buffered
+	Result *config.Result `json:"result"`
+	// BufferedAt is the time the result was written to the local buffer
+	BufferedAt time.Time `json:"bufferedAt"`
+	// RetryCount is the number of upload attempts made for this result
+	RetryCount int `json:"retryCount"`
+	// LastError holds the error message from the most recent failed upload attempt
+	LastError string `json:"lastError,omitempty"`
+	// Evidence is the list of evidence files associated with this result
+	Evidence []models.EvidenceFile `json:"evidence,omitempty"`
 }
 
 // Storage is the unified interface for storing compliance results and evidence
@@ -37,42 +43,54 @@ type Option func(*Config)
 
 // Config contains all storage configuration
 type Config struct {
-	// API configuration
-	APIURL            string
-	RegistrationToken string
+	// APIURL is the URL of the Openlane API endpoint
+	APIURL string
+	// APIToken is the authentication token for API requests
+	APIToken string
+	// OrgID is the organization ID used to scope API requests
+	OrgID string
 
-	// Storage directories
-	DataDir   string
+	// DataDir is the base directory for storing local data
+	DataDir string
+	// BufferDir is the directory used for buffering results when offline
 	BufferDir string
 
-	// Buffering configuration
-	MaxRetries            int
-	RetryBackoff          time.Duration
+	// MaxRetries is the maximum number of upload retry attempts
+	MaxRetries int
+	// RetryBackoff is the duration to wait between retry attempts
+	RetryBackoff time.Duration
+	// BufferRetentionPeriod is the duration to retain buffered results before pruning
 	BufferRetentionPeriod time.Duration
-	SyncInterval          time.Duration
+	// SyncInterval is the interval at which buffered results are synced to the API
+	SyncInterval time.Duration
 
-	// Evidence configuration
-	EvidenceEnabled         bool
+	// EvidenceEnabled indicates whether evidence collection is active
+	EvidenceEnabled bool
+	// EvidenceRetentionPeriod is the duration to retain evidence files before pruning
 	EvidenceRetentionPeriod time.Duration
-	EvidenceMaxFileSize     int64
+	// EvidenceMaxFileSize is the maximum allowed size in bytes for a single evidence file
+	EvidenceMaxFileSize int64
 
-	// Connectivity configuration
+	// ConnectivityCheckURL is the URL used to verify API reachability
 	ConnectivityCheckURL string
+	// ConnectivityInterval is the interval at which connectivity is checked
 	ConnectivityInterval time.Duration
-
-	// JobResult configuration
-	DefaultScheduledJobID string
-	OwnerID               string
-	AgentID               string
 }
 
 // Storage option constructors
 
-// WithAPIConfig configures API connection
+// WithAPIConfig configures the API connection URL and token
 func WithAPIConfig(apiURL, token string) Option {
 	return func(c *Config) {
 		c.APIURL = apiURL
-		c.RegistrationToken = token
+		c.APIToken = token
+	}
+}
+
+// WithOrgID sets the organization ID used to scope API requests
+func WithOrgID(orgID string) Option {
+	return func(c *Config) {
+		c.OrgID = orgID
 	}
 }
 
@@ -109,15 +127,6 @@ func WithRetryPolicy(maxRetries int, backoff time.Duration) Option {
 	return func(c *Config) {
 		c.MaxRetries = maxRetries
 		c.RetryBackoff = backoff
-	}
-}
-
-// WithJobResultConfig configures JobResult creation
-func WithJobResultConfig(scheduledJobID, ownerID, agentID string) Option {
-	return func(c *Config) {
-		c.DefaultScheduledJobID = scheduledJobID
-		c.OwnerID = ownerID
-		c.AgentID = agentID
 	}
 }
 

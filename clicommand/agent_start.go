@@ -123,7 +123,7 @@ func StartAction(_ context.Context, cmd *cli.Command) error {
 	}
 
 	if cmd.IsSet("api-key") && apiKey != "" {
-		cfg.RegistrationToken = apiKey
+		cfg.APIToken = apiKey
 	}
 
 	if cmd.IsSet("api-url") && apiURL != "" {
@@ -194,15 +194,7 @@ func StartAction(_ context.Context, cmd *cli.Command) error {
 		cancel()
 	}()
 
-	if cfg.EnableRemotePoll {
-		log.Info().Msg("Registering Openlane compliance agent")
-
-		if err := agent.Register(ctxCancel); err != nil {
-			log.Warn().Err(err).Msg("Agent registration failed; continuing in local-schedule token mode")
-		}
-	} else {
-		log.Info().Msg("Remote polling disabled; skipping job-runner registration")
-	}
+	log.Info().Msg("Running local schedule mode")
 
 	log.Info().Int("workers", cfg.Spawn).Msg("Agent starting with workers")
 
@@ -334,7 +326,7 @@ func StatusAction(_ context.Context, cmd *cli.Command) error {
 		if err == nil {
 			fmt.Printf("Agent name: %s\n", cfg.AgentName)
 			fmt.Printf("API URL: %s\n", cfg.APIURL)
-			fmt.Printf("Poll interval: %s\n", cfg.PollInterval)
+			fmt.Printf("Schedule scan interval: %s\n", cfg.PollInterval)
 			fmt.Printf("Max concurrency: %d\n", cfg.MaxConcurrency)
 			fmt.Printf("Number of checks: %d\n", len(cfg.Checks))
 
@@ -385,12 +377,10 @@ func CheckAction(_ context.Context, cmd *cli.Command) error {
 	fmt.Printf("Schedule: %s\n", check.Schedule)
 	fmt.Println("---")
 
-	var (
-		apiClient *api.GraphQLClient
-	)
+	var apiClient *api.GraphQLClient
 
-	if cfg.RegistrationToken != "" && cfg.APIURL != "" {
-		client, err := api.NewGraphQLClient(cfg.APIURL, cfg.RegistrationToken)
+	if cfg.Token() != "" && cfg.APIURL != "" {
+		client, err := api.NewGraphQLClient(cfg.APIURL, cfg.Token())
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to create API client, results will only be buffered locally")
 		} else {
@@ -413,7 +403,7 @@ func CheckAction(_ context.Context, cmd *cli.Command) error {
 	}
 
 	controller := core.NewComplianceCheckController(apiClient, "cli-execution", storageSystem, evidenceService)
-	controller.SetCurrentCheck(check.Name, "")
+	controller.SetCurrentCheck(check.Name)
 
 	ctxExec := context.Background()
 
@@ -534,7 +524,7 @@ func daemonize(pidFile string) error {
 
 	childArgs = append(childArgs, "--no-daemon")
 
-	command := exec.Command(os.Args[0], childArgs...) //nolint:gosec
+	command := exec.CommandContext(context.Background(), os.Args[0], childArgs...) //nolint:gosec
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 
@@ -544,6 +534,13 @@ func daemonize(pidFile string) error {
 
 	pidContent := fmt.Sprintf("%d\n", command.Process.Pid)
 	if err := os.WriteFile(pidFile, []byte(pidContent), 0o600); err != nil { // nolint:mnd
+		// If PID file creation fails, terminate the child so we don't leave a detached process running.
+		if killErr := command.Process.Kill(); killErr != nil {
+			log.Warn().Err(killErr).Int("pid", command.Process.Pid).Msg("Failed to stop daemon child after PID file write failure")
+		}
+
+		_, _ = command.Process.Wait()
+
 		return fmt.Errorf("%w %s: %w", ErrFailedToWritePIDFile, pidFile, err)
 	}
 
