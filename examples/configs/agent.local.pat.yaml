@@ -1,0 +1,25 @@
+token: ${OPENLANE_AGENT_TOKEN}
+apiUrl: http://localhost:17608
+agentName: mitb-local-agent-pat
+logLevel: debug
+dataDir: ./data-local
+pollInterval: 15s
+spawn: 1
+maxConcurrency: 1
+defaultTimeout: 2m
+
+offline:
+  mode: buffered
+  outputDir: ./results-local
+  bufferDir: ./buffer-local
+  syncInterval: 30s
+
+checks:
+  - name: test-check
+    description: Connectivity validation check
+    command: /bin/echo
+    args:
+      - agent check ok
+    schedule: "*/10 * * * * *"
+    timeout: 30s
+    enabled: true

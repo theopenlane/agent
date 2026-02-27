@@ -1,0 +1,36 @@
+token: "${OPENLANE_AGENT_TOKEN}"
+apiUrl: "http://localhost:17608"
+agentName: "agent-control-demo"
+logLevel: "debug"
+dataDir: "./data-demo"
+pollInterval: "10s"
+spawn: 1
+maxConcurrency: 1
+defaultTimeout: "1m"
+
+offline:
+  mode: "buffered"
+  outputDir: "./results-demo"
+  bufferDir: "./buffer-demo"
+  syncInterval: "10s"
+
+evidence:
+  enabled: true
+  retentionPeriod: "24h"
+  maxFileSize: 10485760
+  compressFiles: false
+
+checks:
+  - name: "agent-control-demo-check"
+    description: "Demo check for control-linked evidence uploads"
+    command: "/bin/sh"
+    args:
+      - "-c"
+      - "echo '{\"findings\":[{\"resource\":\"demo-host\",\"title\":\"demo finding\",\"severity\":\"low\",\"status\":\"open\"}]}'"
+    schedule: "*/5 * * * * *"
+    timeout: "20s"
+    enabled: true
+    complianceStandards:
+      - standard: "01KJFXPPVD3RY7W91A3J78WZP0"
+        controls:
+          - "OLAGENT-DEMO-CONTROL-001"

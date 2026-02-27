@@ -1,1 +1,8 @@
 gum*
+openlane-agent
+agent
+.env
+.task
+.claude
+buffer
+.check.log

@@ -1,0 +1,177 @@
+env:
+  APP_NAME: agent
+  BINARY_NAME: openlane-agent
+  IMAGE_REPO: ghcr.io/theopenlane/${APP_NAME}
+  IMAGE_TAG: ${BUILDKITE_BUILD_NUMBER}-${BUILDKITE_COMMIT:0:8}
+  GOFLAGS: -buildvcs=false
+  GOCACHE: $HOME/.cache/go-build
+  GOMODCACHE: $HOME/.cache/go/pkg/mod
+  GOLANGCI_LINT_CACHE: $HOME/.cache/golangci-lint
+
+secrets:
+  - SECRET_GHCR_PUBLISH_TOKEN
+
+steps:
+  - group: ":golangci-lint: Linter"
+    key: "linter"
+    steps:
+      - label: ":golangci-lint: lint - non-api packages :lint-roller:"
+        if_changed:
+          include:
+            - "**.go"
+            - .golangci.yaml
+            - go.{mod,sum}
+        cancel_on_build_failing: true
+        key: "lint_non_api"
+        plugins:
+          - docker#v5.13.0:
+              image: "ghcr.io/theopenlane/build-image:latest"
+              command: ["task", "go:lint:ci"]
+              always_pull: true
+              propagate-environment: true
+              volumes:
+                - $GOCACHE:$GOCACHE
+                - $GOMODCACHE:$GOMODCACHE
+                - $GOLANGCI_LINT_CACHE:$GOLANGCI_LINT_CACHE
+              environment:
+                - "GOTOOLCHAIN=auto"
+
+  - group: ":test_tube: Tests"
+    key: "go_tests"
+    steps:
+      - label: ":golang: go test - all"
+        key: "go_test_all"
+        cancel_on_build_failing: true
+        if_changed:
+          include:
+            - "**.go"
+            - go.{mod,sum}
+        plugins:
+          - docker#v5.13.0:
+              image: ghcr.io/theopenlane/build-image:latest
+              always_pull: true
+              command: ["task", "go:test:cover"]
+              propagate-environment: true
+              volumes:
+                - $GOCACHE:$GOCACHE
+                - $GOMODCACHE:$GOMODCACHE
+                - $GOLANGCI_LINT_CACHE:$GOLANGCI_LINT_CACHE
+                - "/var/run/docker.sock:/var/run/docker.sock"
+              environment:
+                - "GOTOOLCHAIN=auto"
+                - "TEST_DB_URL=docker://postgres:16-alpine"
+                - "TEST_DB_CONTAINER_EXPIRY=20"
+                - "TEST_DB_HOST=172.17.0.1"
+        artifact_paths: ["coverage.out"]
+
+  - group: ":golang: Builds"
+    key: "go-builds"
+    steps:
+      - label: ":golang: build"
+        key: "gobuild-server"
+        cancel_on_build_failing: true
+        artifact_paths: "${BINARY_NAME}"
+        if_changed:
+          include:
+            - "**.go"
+            - go.{mod,sum}
+            - docker/Dockerfile
+            - Taskfile.yaml
+        plugins:
+          - docker#v5.13.0:
+              image: "ghcr.io/theopenlane/build-image:latest"
+              always_pull: true
+              propagate-environment: true
+              volumes:
+                - $GOCACHE:$GOCACHE
+                - $GOMODCACHE:$GOMODCACHE
+                - $GOLANGCI_LINT_CACHE:$GOLANGCI_LINT_CACHE
+              environment:
+                - "CGO_ENABLED=0"
+                - "GOOS=linux"
+              command: ["task", "build"]
+
+      - label: ":golang: build release"
+        key: "gobuild-server-release"
+        if: build.tag != null
+        cancel_on_build_failing: true
+        artifact_paths: "${BINARY_NAME}"
+        plugins:
+          - docker#v5.13.0:
+              image: "ghcr.io/theopenlane/build-image:latest"
+              always_pull: true
+              propagate-environment: true
+              volumes:
+                - $GOCACHE:$GOCACHE
+                - $GOMODCACHE:$GOMODCACHE
+                - $GOLANGCI_LINT_CACHE:$GOLANGCI_LINT_CACHE
+              environment:
+                - "CGO_ENABLED=0"
+                - "GOOS=linux"
+              command: ["task", "build"]
+
+  - group: ":docker: Image Build"
+    depends_on: "go-builds"
+    key: "image-build"
+    steps:
+      - label: ":docker: docker pr build"
+        key: "docker-pr-build"
+        cancel_on_build_failing: true
+        if: build.branch != "main" && build.tag == null
+        if_changed:
+          include:
+            - "**.go"
+            - go.{mod,sum}
+            - docker/Dockerfile
+        commands: |
+          #!/bin/bash
+          chmod +x ${BINARY_NAME}
+        plugins:
+          - artifacts#v1.9.4:
+              download:
+                - from: "${BINARY_NAME}"
+                  to: "${BINARY_NAME}"
+              step: "gobuild-server"
+          - docker-login#v3.0.0:
+              username: openlane-bender
+              password-env: SECRET_GHCR_PUBLISH_TOKEN
+              server: ghcr.io
+          - theopenlane/docker-metadata#v1.0.1:
+              images:
+                - "${IMAGE_REPO}"
+              extra_tags:
+                - "${IMAGE_TAG}"
+          - theopenlane/container-build#v1.1.1:
+              dockerfile: docker/Dockerfile
+              push: false
+              build-args:
+                - NAME=${BINARY_NAME}
+
+      - label: ":docker: docker build and publish"
+        key: "docker-build-and-tag"
+        cancel_on_build_failing: true
+        if: build.tag != null
+        commands: |
+          #!/bin/bash
+          chmod +x ${BINARY_NAME}
+        plugins:
+          - artifacts#v1.9.4:
+              download:
+                - from: "${BINARY_NAME}"
+                  to: "${BINARY_NAME}"
+              step: "gobuild-server-release"
+          - docker-login#v3.0.0:
+              username: openlane-bender
+              password-env: SECRET_GHCR_PUBLISH_TOKEN
+              server: ghcr.io
+          - theopenlane/docker-metadata#v1.0.1:
+              images:
+                - "${IMAGE_REPO}"
+              extra_tags:
+                - "${BUILDKITE_TAG}"
+                - "latest"
+          - theopenlane/container-build#v1.1.1:
+              dockerfile: docker/Dockerfile
+              push: true
+              build-args:
+                - NAME=${BINARY_NAME}

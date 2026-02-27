@@ -1,0 +1,162 @@
+version: "3"
+
+env:
+  OPENLANE_API_HOST: "http://localhost:17608"
+  AGENT_DATA_DIR: "./data"
+  AGENT_LOG_LEVEL: "debug"
+
+vars:
+  TEST_CONFIG: "test-agent.yaml"
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the agent binary
+    cmds:
+      - go build -mod=mod -o openlane-agent ./main.go
+
+  config:validate:
+    desc: Validate agent configuration file
+    cmds:
+      - go run cmd/validate-config/main.go {{.CONFIG_FILE | default .AGENT_CONFIG_FILE}}
+
+  config:init:
+    desc: Initialize new agent configuration
+    deps: [build]
+    cmds:
+      - ./openlane-agent config init --output {{.CLI_ARGS | default "agent.yaml"}}
+
+  config:init:standalone:
+    desc: Initialize standalone mode configuration
+    deps: [build]
+    vars:
+      STANDALONE_CONFIG: "agent-standalone.yaml"
+    env:
+      OPENLANE_AGENT_OFFLINE_MODE: "standalone"
+      OPENLANE_AGENT_OFFLINE_OUTPUTDIR: "./results"
+      OPENLANE_AGENT_OFFLINE_OUTPUTFORMAT: "json"
+    cmds:
+      - ./openlane-agent config init --output {{.STANDALONE_CONFIG}}
+
+  config:init:buffered:
+    desc: Initialize buffered mode configuration
+    deps: [build]
+    vars:
+      BUFFERED_CONFIG: "agent-buffered.yaml"
+    env:
+      OPENLANE_AGENT_OFFLINE_MODE: "buffered"
+      OPENLANE_AGENT_OFFLINE_BUFFERDIR: "./buffer"
+      OPENLANE_AGENT_OFFLINE_MAXRETRIES: "5"
+      OPENLANE_AGENT_OFFLINE_BUFFERRETENTIONPERIOD: "7d"
+    cmds:
+      - ./openlane-agent config init --output {{.BUFFERED_CONFIG}}
+
+  config:show:
+    desc: Show current configuration
+    deps: [build]
+    cmds:
+      - ./openlane-agent config show --config {{.AGENT_CONFIG_FILE}}
+
+  server:check:
+    desc: Check if Openlane server is running
+    cmds:
+      - curl -f {{.OPENLANE_API_HOST}}/livez || (echo "Server not running. Please start the server first." && exit 1)
+
+  agent:run:
+    desc: Run the agent with test configuration (daemon mode)
+    deps: [build]
+    cmds:
+      - ./openlane-agent start -c {{.AGENT_CONFIG_FILE}}
+
+  agent:start:bg:
+    desc: Start the compliance agent in background
+    deps: ['build:agent', 'test:setup', 'test:config:check']
+    cmds:
+      - nohup ./openlane-agent start --config {{.TEST_CONFIG}} --no-daemon --log-level debug --api-url {{.OPENLANE_API_HOST}} > agent.log 2>&1 & echo $! > agent.pid
+
+  agent:start:daemon:
+    desc: Start the compliance agent in daemon mode
+    deps: ['build:agent', 'test:setup', 'test:config:check']
+    cmds:
+      - ./openlane-agent start --config {{.TEST_CONFIG}} --log-level debug --api-url {{.OPENLANE_API_HOST}}
+
+  agent:stop:
+    desc: Stop the background agent
+    cmds:
+      - '[ -f agent.pid ] && kill $(cat agent.pid) && rm -f agent.pid || echo "Agent not running"'
+
+  agent:stop:daemon:
+    desc: Stop the daemon agent using built-in command
+    deps: [build]
+    cmds:
+      - ./openlane-agent stop
+
+  agent:status:
+    desc: Check agent status and logs
+    cmds:
+      - '[ -f agent.pid ] && ps -p $(cat agent.pid) > /dev/null && echo "Agent running (PID: $(cat agent.pid))" || echo "Agent not running"'
+      - '[ -f agent.log ] && tail -10 agent.log || echo "No logs available"'
+
+  agent:status:daemon:
+    desc: Check daemon agent status using built-in command
+    deps: [build]
+    cmds:
+      - ./openlane-agent status
+
+  go:lint:
+    desc: runs golangci-lint, the most annoying opinionated linter ever
+    cmds:
+      - golangci-lint run --config=.golangci.yaml --verbose --fix
+
+  go:lint:ci:
+    desc: runs golangci-lint, the most annoying opinionated linter ever, for CI
+    ## do not use --fix in CI
+    cmds:
+      - golangci-lint run --config=.golangci.yaml --verbose
+
+  go:fmt:
+    desc: format all go code
+    cmds:
+      - go fmt ./...
+
+  go:test:
+    desc: runs and outputs results of created go tests
+    cmds:
+      - go test -v ./...
+
+  go:test:cover:
+    desc: runs and outputs results of created go tests with coverage
+    aliases: [cover]
+    cmds:
+      - go test -v ./... -coverprofile=coverage.out
+
+  go:tidy:
+    desc: runs go mod tidy on the backend
+    aliases: [tidy]
+    cmds:
+      - go mod tidy
+
+  go:all:
+    aliases: [go]
+    desc: runs all go test and lint related tasks
+    cmds:
+      - task: go:tidy
+      - task: go:fmt
+      - task: go:lint
+      - task: go:test
+
+  precommit-full:
+    desc: Lint the project against all files
+    cmds:
+      - pre-commit install && pre-commit install-hooks
+      - pre-commit autoupdate
+      - pre-commit run --show-diff-on-failure --color=always --all-files
+
+  basiccheck:
+    desc: run test-agent check
+    cmds:
+      - ./openlane-agent check disk-encryption-check --config test-agent.yaml

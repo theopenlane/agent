@@ -1,0 +1,37 @@
+token: ${OPENLANE_AGENT_TOKEN}
+apiUrl: http://localhost:17608
+agentName: openlane-agent
+logLevel: info
+dataDir: ./data
+pollInterval: 1m
+spawn: 1
+maxConcurrency: 3
+defaultTimeout: 5m
+
+offline:
+  mode: buffered
+  outputDir: ./results
+  bufferDir: ./buffer
+  syncInterval: 30s
+
+evidence:
+  enabled: true
+  retentionPeriod: 24h
+  maxFileSize: 10485760
+  compressFiles: false
+
+checks:
+  - name: test-check
+    description: Simple test check that runs every minute
+    command: /bin/echo
+    args:
+      - Test check executed successfully
+    schedule: "*/1 * * * *"
+    timeout: 30s
+    complianceStandards:
+      - standard: soc2v2022
+        controls:
+          - TEST.001
+    tags:
+      - test
+    enabled: true

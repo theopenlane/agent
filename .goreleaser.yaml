@@ -1,0 +1,111 @@
+version: 2
+project_name: openlane-agent
+builds:
+  # ------------------------
+  # Linux amd64
+  # ------------------------
+  - id: linux-amd64
+    main: .
+    binary: openlane-agent
+    goos:
+      - linux
+    goarch:
+      - amd64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - "-s -w"
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
+  # ------------------------
+  # Darwin amd64
+  # ------------------------
+  - id: darwin-amd64
+    main: .
+    binary: openlane-agent
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
+
+  # ------------------------
+  # Darwin arm64
+  # ------------------------
+  - id: darwin-arm64
+    main: .
+    binary: openlane-agent
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
+  # ------------------------
+  # Linux arm64
+  # ------------------------
+  - id: linux-arm64
+    main: .
+    binary: openlane-agent
+    goos:
+      - linux
+    goarch:
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -tags=netgo
+    ldflags:
+      - "-s -w"
+      - "-X github.com/theopenlane/agent/internal/constants.AgentVersion={{ .Env.VERSION }}"
+archives:
+  - formats: ['tar.gz'] # we can use binary, but it seems there's an issue where goreleaser skips the sboms
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: ['zip']
+source:
+  enabled: true
+changelog:
+  sort: asc
+  use: github
+sboms:
+  - artifacts: archive
+release:
+  prerelease: auto
+  github:
+    owner: theopenlane
+    name: agent
+# This section defines how and which artifacts we want to sign for the release.
+signs:
+  - cmd: cosign
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes" # needed on cosign >= 2.0.0
+    artifacts: archive
+    output: true
+    signature: "${artifact}.sigstore.json"
+homebrew_casks:
+  - homepage: 'https://github.com/theopenlane/agent'
+    description: 'openlane-agent is a remote processing agent for executing Openlane continuous compliance tasks'
+    license: 'Apache-2.0'
+    commit_author:
+      name: theopenlane-bender
+      email: bender@theopenlane.io
+    repository:
+      owner: theopenlane
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"

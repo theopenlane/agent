@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/theopenlane/agent/config/config.-config",
+  "$defs": {
+    "[]config.ActionCommand": {
+      "items": {
+        "$ref": "#/$defs/config.ActionCommand"
+      },
+      "type": "array"
+    },
+    "[]config.Check": {
+      "items": {
+        "$ref": "#/$defs/config.Check"
+      },
+      "type": "array"
+    },
+    "[]config.ComplianceStandard": {
+      "items": {
+        "$ref": "#/$defs/config.ComplianceStandard"
+      },
+      "type": "array"
+    },
+    "[]config.PlatformVariant": {
+      "items": {
+        "$ref": "#/$defs/config.PlatformVariant"
+      },
+      "type": "array"
+    },
+    "[]string": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "config.ActionCommand": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "$ref": "#/$defs/[]string"
+        },
+        "workDir": {
+          "type": "string"
+        },
+        "env": {
+          "$ref": "#/$defs/[]string"
+        },
+        "timeout": {
+          "type": "integer"
+        },
+        "continueOnError": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ActionCommand represents a command to execute on pass/fail"
+    },
+    "config.ActionConfig": {
+      "properties": {
+        "uploadEvidence": {
+          "type": "boolean",
+          "description": "Upload evidence to controls"
+        },
+        "commands": {
+          "$ref": "#/$defs/[]config.ActionCommand",
+          "description": "Commands to execute"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ActionConfig defines actions to take on pass/fail scenarios"
+    },
+    "config.Check": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Basic info"
+        },
+        "description": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string",
+          "description": "Execution details"
+        },
+        "args": {
+          "$ref": "#/$defs/[]string"
+        },
+        "workDir": {
+          "type": "string"
+        },
+        "env": {
+          "$ref": "#/$defs/[]string",
+          "description": "Environment variables"
+        },
+        "schedule": {
+          "type": "string",
+          "description": "Scheduling"
+        },
+        "timeout": {
+          "type": "integer"
+        },
+        "complianceStandards": {
+          "$ref": "#/$defs/[]config.ComplianceStandard",
+          "description": "Compliance context"
+        },
+        "tags": {
+          "$ref": "#/$defs/[]string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Execution options"
+        },
+        "continueOnError": {
+          "type": "boolean"
+        },
+        "evidencePaths": {
+          "$ref": "#/$defs/[]string",
+          "description": "Evidence collection"
+        },
+        "platformVariants": {
+          "$ref": "#/$defs/[]config.PlatformVariant",
+          "description": "Platform-specific variants (following gitMDM pattern)"
+        },
+        "onPass": {
+          "$ref": "#/$defs/config.ActionConfig",
+          "description": "Pass/Fail behavior configuration"
+        },
+        "onFail": {
+          "$ref": "#/$defs/config.ActionConfig"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Check represents a single compliance check configuration"
+    },
+    "config.ComplianceStandard": {
+      "properties": {
+        "standard": {
+          "type": "string"
+        },
+        "controls": {
+          "$ref": "#/$defs/[]string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ComplianceStandard represents a compliance standard and its associated controls"
+    },
+    "config.EvidenceConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "retentionPeriod": {
+          "type": "integer"
+        },
+        "maxFileSize": {
+          "type": "integer"
+        },
+        "compressFiles": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "EvidenceConfig configures evidence collection and retention"
+    },
+    "config.IdentityConfig": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "cacheTimeout": {
+          "type": "integer"
+        },
+        "fallbackToHostname": {
+          "type": "boolean"
+        },
+        "overrideHardwareId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "IdentityConfig configures hardware identification"
+    },
+    "config.OfflineConfig": {
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "outputDir": {
+          "type": "string",
+          "description": "Standalone mode settings"
+        },
+        "outputFormat": {
+          "type": "string"
+        },
+        "bufferDir": {
+          "type": "string",
+          "description": "Buffered mode settings"
+        },
+        "connectivityCheckUrl": {
+          "type": "string"
+        },
+        "connectivityInterval": {
+          "type": "integer"
+        },
+        "syncInterval": {
+          "type": "integer"
+        },
+        "maxRetries": {
+          "type": "integer"
+        },
+        "bufferRetentionPeriod": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "OfflineConfig configures offline behavior and operation modes"
+    },
+    "config.PlatformVariant": {
+      "properties": {
+        "platforms": {
+          "$ref": "#/$defs/[]string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "$ref": "#/$defs/[]string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "includes": {
+          "type": "string"
+        },
+        "excludes": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "env": {
+          "$ref": "#/$defs/[]string"
+        },
+        "workDir": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "integer"
+        },
+        "remediation": {
+          "$ref": "#/$defs/[]string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "PlatformVariant represents platform-specific check configuration"
+    },
+    "config.RetryConfig": {
+      "properties": {
+        "maxAttempts": {
+          "type": "integer"
+        },
+        "initialDelay": {
+          "type": "integer"
+        },
+        "maxDelay": {
+          "type": "integer"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "multiplier": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "RetryConfig configures retry behavior for operations"
+    }
+  },
+  "properties": {
+    "token": {
+      "type": "string",
+      "description": "API connection settings"
+    },
+    "apiUrl": {
+      "type": "string"
+    },
+    "agentId": {
+      "type": "string",
+      "description": "Agent identification"
+    },
+    "agentName": {
+      "type": "string"
+    },
+    "logLevel": {
+      "type": "string",
+      "description": "Global settings"
+    },
+    "dataDir": {
+      "type": "string"
+    },
+    "pollInterval": {
+      "type": "integer"
+    },
+    "spawn": {
+      "type": "integer",
+      "description": "Execution settings"
+    },
+    "maxConcurrency": {
+      "type": "integer"
+    },
+    "defaultTimeout": {
+      "type": "integer"
+    },
+    "evidence": {
+      "$ref": "#/$defs/config.EvidenceConfig",
+      "description": "Evidence settings"
+    },
+    "offline": {
+      "$ref": "#/$defs/config.OfflineConfig",
+      "description": "Offline buffering settings"
+    },
+    "retry": {
+      "$ref": "#/$defs/config.RetryConfig",
+      "description": "Retry configuration"
+    },
+    "identity": {
+      "$ref": "#/$defs/config.IdentityConfig",
+      "description": "Identity configuration"
+    },
+    "checks": {
+      "$ref": "#/$defs/[]config.Check",
+      "description": "Compliance checks to run locally"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "title": "Openlane Agent Configuration",
+  "description": "Configuration schema for the Openlane compliance automation agent"
+}
