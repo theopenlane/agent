@@ -74,13 +74,13 @@ tasks:
 
   agent:start:bg:
     desc: Start the compliance agent in background
-    deps: [build:agent, test:setup, test:config:check]
+    deps: ['build:agent', 'test:setup', 'test:config:check']
     cmds:
       - nohup ./openlane-agent start --config {{.TEST_CONFIG}} --no-daemon --log-level debug --api-url {{.OPENLANE_API_HOST}} > agent.log 2>&1 & echo $! > agent.pid
 
   agent:start:daemon:
     desc: Start the compliance agent in daemon mode
-    deps: [build:agent, test:setup, test:config:check]
+    deps: ['build:agent', 'test:setup', 'test:config:check']
     cmds:
       - ./openlane-agent start --config {{.TEST_CONFIG}} --log-level debug --api-url {{.OPENLANE_API_HOST}}
 

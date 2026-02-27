@@ -13,20 +13,20 @@ checks:
   # Disk encryption check - different approaches per platform
   - name: "disk_encryption_enabled"
     description: "Verify that full disk encryption is enabled"
-    schedule: "0 8 * * *"  # Daily at 8 AM
+    schedule: "0 8 * * *" # Daily at 8 AM
     enabled: true
     complianceStandards:
       - standard: nist80053v5
         controls:
-          - SC-28  # Protection of Information at Rest
+          - SC-28 # Protection of Information at Rest
       - standard: cis
         controls:
-          - "3.7"  # Ensure drive encryption
+          - "3.7" # Ensure drive encryption
     tags:
       - "encryption"
       - "data_protection"
       - "security"
-    
+
     # Platform-specific implementations
     platformVariants:
       # macOS - Check FileVault status
@@ -38,7 +38,7 @@ checks:
           - "Enable FileVault: sudo fdesetup enable"
           - "Follow the prompts to create a recovery key"
           - "Store recovery key securely"
-      
+
       # Linux - Check for LUKS encryption
       - platforms: ["linux"]
         file: "/proc/mounts"
@@ -47,7 +47,7 @@ checks:
           - "Configure LUKS encryption during installation"
           - "Or encrypt existing partition: cryptsetup luksFormat /dev/sdX"
           - "Update /etc/fstab and /etc/crypttab"
-      
+
       # Windows - Check BitLocker status
       - platforms: ["windows"]
         command: "manage-bde"
@@ -57,14 +57,14 @@ checks:
           - "Enable BitLocker: manage-bde -on C: -RecoveryPassword"
           - "Save recovery key: manage-bde -protectors -get C:"
           - "Verify encryption: manage-bde -status C:"
-    
+
     evidencePaths:
       - "/var/log/messages"
       - "/var/log/auth.log"
-    
+
     onPass:
       uploadEvidence: true
-    
+
     onFail:
       uploadEvidence: true
       commands:
@@ -75,30 +75,30 @@ checks:
   # Automatic login disabled check
   - name: "auto_login_disabled"
     description: "Verify automatic login is disabled for security"
-    schedule: "0 */6 * * *"  # Every 6 hours
+    schedule: "0 */6 * * *" # Every 6 hours
     enabled: true
     complianceStandards:
       - standard: nist80053v5
         controls:
-          - AC-2   # Account Management
+          - AC-2 # Account Management
       - standard: cis
         controls:
-          - "5.3"  # Disable Automatic Login
+          - "5.3" # Disable Automatic Login
     tags:
       - "authentication"
       - "access_control"
-    
+
     platformVariants:
       # macOS - Check login window settings
       - platforms: ["darwin"]
         command: "defaults"
         args: ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"]
-        exitCode: 1  # Should fail when auto-login is disabled
+        exitCode: 1 # Should fail when auto-login is disabled
         remediation:
           - "Disable auto-login: sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser"
           - "Restart system to apply changes"
-      
-      # Linux (Ubuntu/Debian) - Check GDM settings  
+
+      # Linux (Ubuntu/Debian) - Check GDM settings
       - platforms: ["ubuntu", "debian"]
         file: "/etc/gdm3/daemon.conf"
         excludes: "AutomaticLoginEnable\\s*=\\s*true"
@@ -106,7 +106,7 @@ checks:
           - "Edit /etc/gdm3/daemon.conf"
           - "Set AutomaticLoginEnable=false"
           - "Restart gdm3: sudo systemctl restart gdm3"
-      
+
       # Linux (RHEL/CentOS) - Check GDM settings
       - platforms: ["rhel", "centos", "fedora"]
         file: "/etc/gdm/daemon.conf"
@@ -115,7 +115,7 @@ checks:
           - "Edit /etc/gdm/daemon.conf"
           - "Set AutomaticLoginEnable=false"
           - "Restart gdm: sudo systemctl restart gdm"
-      
+
       # Windows - Check registry for auto-login
       - platforms: ["windows"]
         command: "reg"
@@ -123,7 +123,7 @@ checks:
         includes: "AutoAdminLogon\\s+REG_SZ\\s+0"
         remediation:
           - "Disable auto-login: reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v AutoAdminLogon /t REG_SZ /d 0 /f"
-    
+
     evidencePaths:
       - "/var/log/auth.log"
       - "/var/log/secure"
@@ -131,19 +131,19 @@ checks:
   # System updates current check
   - name: "system_updates_current"
     description: "Verify system security updates are installed"
-    schedule: "0 6 * * *"  # Daily at 6 AM
+    schedule: "0 6 * * *" # Daily at 6 AM
     enabled: true
     complianceStandards:
       - standard: nist80053v5
         controls:
-          - SI-2   # Flaw Remediation
+          - SI-2 # Flaw Remediation
       - standard: cis
         controls:
-          - "1.9"  # Ensure updates are installed
+          - "1.9" # Ensure updates are installed
     tags:
       - "patches"
       - "vulnerability_management"
-    
+
     platformVariants:
       # macOS - Check for available updates
       - platforms: ["darwin"]
@@ -154,7 +154,7 @@ checks:
         remediation:
           - "Install updates: sudo softwareupdate -ia"
           - "Enable automatic updates in System Preferences"
-      
+
       # Ubuntu/Debian - Check apt updates
       - platforms: ["ubuntu", "debian"]
         command: "apt"
@@ -164,26 +164,26 @@ checks:
           - "Update package list: sudo apt update"
           - "Install security updates: sudo apt upgrade"
           - "Enable unattended upgrades: sudo dpkg-reconfigure unattended-upgrades"
-      
+
       # RHEL/CentOS - Check dnf/yum updates
       - platforms: ["rhel", "centos", "fedora"]
         command: "dnf"
         args: ["check-update", "--security"]
-        exitCode: 0  # No updates available
+        exitCode: 0 # No updates available
         remediation:
           - "Install security updates: sudo dnf update --security"
           - "Enable automatic updates: sudo dnf install dnf-automatic"
-      
+
       # Windows - Check for pending updates
       - platforms: ["windows"]
         command: "powershell"
         args: ["-Command", "Get-WUList | Where-Object {$_.IsDownloaded -eq $false} | Measure-Object | Select-Object -ExpandProperty Count"]
-        includes: "^0$"  # Zero pending updates
+        includes: "^0$" # Zero pending updates
         timeout: "3m"
         remediation:
           - "Install updates through Windows Update"
           - "Enable automatic updates in Settings"
-    
+
     evidencePaths:
       - "/var/log/apt/history.log"
       - "/var/log/dnf.log"
@@ -192,19 +192,19 @@ checks:
   # Firewall enabled check
   - name: "host_firewall_enabled"
     description: "Verify host-based firewall is active"
-    schedule: "0 */12 * * *"  # Twice daily
+    schedule: "0 */12 * * *" # Twice daily
     enabled: true
     complianceStandards:
       - standard: nist80053v5
         controls:
-          - SC-7   # Boundary Protection
+          - SC-7 # Boundary Protection
       - standard: cis
         controls:
-          - "3.5"  # Configure firewall
+          - "3.5" # Configure firewall
     tags:
       - "firewall"
       - "network_security"
-    
+
     platformVariants:
       # macOS - Check Application Firewall
       - platforms: ["darwin"]
@@ -214,7 +214,7 @@ checks:
         remediation:
           - "Enable firewall: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on"
           - "Configure firewall rules in System Preferences"
-      
+
       # Linux - Check UFW status (Ubuntu/Debian)
       - platforms: ["ubuntu", "debian"]
         command: "systemctl"
@@ -224,7 +224,7 @@ checks:
           - "Install UFW: sudo apt install ufw"
           - "Enable UFW: sudo ufw enable"
           - "Configure rules: sudo ufw default deny incoming && sudo ufw default allow outgoing"
-      
+
       # Linux - Check iptables/firewalld (RHEL/CentOS)
       - platforms: ["rhel", "centos", "fedora"]
         command: "systemctl"
@@ -234,7 +234,7 @@ checks:
           - "Start firewalld: sudo systemctl start firewalld"
           - "Enable firewalld: sudo systemctl enable firewalld"
           - "Configure zones: sudo firewall-cmd --set-default-zone=public"
-      
+
       # Windows - Check Windows Firewall
       - platforms: ["windows"]
         command: "netsh"
@@ -243,31 +243,31 @@ checks:
         remediation:
           - "Enable Windows Firewall for all profiles"
           - "Configure through Windows Security settings"
-    
+
     evidencePaths:
       - "/var/log/ufw.log"
       - "/var/log/firewalld"
-    
+
     onFail:
-      uploadEvidence: false  # Don't upload firewall logs for security
+      uploadEvidence: false # Don't upload firewall logs for security
 
   # Cross-platform check example (works on all platforms)
   - name: "hostname_configured"
     description: "Verify system hostname is properly configured"
     command: "hostname"
     args: ["-f"]
-    schedule: "0 12 * * *"  # Daily at noon
+    schedule: "0 12 * * *" # Daily at noon
     enabled: true
     complianceStandards:
       - standard: nist80053v5
         controls:
-          - CM-6   # Configuration Settings
+          - CM-6 # Configuration Settings
     tags:
       - "configuration"
       - "identity"
-    
+
     # No platform variants - this check works the same on all platforms
-    
+
     evidencePaths:
       - "/etc/hostname"
       - "/etc/hosts"

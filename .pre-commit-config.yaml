@@ -10,10 +10,10 @@ repos:
       - id: trailing-whitespace
       - id: detect-private-key
   - repo: https://github.com/google/yamlfmt
-    rev: v0.20.0
+    rev: v0.21.0
     hooks:
       - id: yamlfmt
   - repo: https://github.com/adhtruong/mirrors-typos
-    rev: v1.39.0
+    rev: v1.43.5
     hooks:
       - id: typos

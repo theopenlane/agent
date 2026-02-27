@@ -70,6 +70,7 @@ func (m *Manager) Check(ctx context.Context) error {
 	}
 
 	var lastErr error
+
 	for _, target := range targets {
 		req, reqErr := http.NewRequestWithContext(ctx, "GET", target, nil)
 		if reqErr != nil {
@@ -105,16 +106,16 @@ func (m *Manager) Check(ctx context.Context) error {
 func (m *Manager) probeTargets() ([]string, error) {
 	apiURL := strings.TrimSpace(m.apiURL)
 	if apiURL == "" {
-		return nil, fmt.Errorf("api url is required")
+		return nil, ErrAPIURLRequired
 	}
 
 	parsed, err := url.Parse(apiURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid api url %q: %w", apiURL, err)
+		return nil, fmt.Errorf("%w %q: %w", ErrInvalidAPIURL, apiURL, err)
 	}
 
 	if parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid api url %q", apiURL)
+		return nil, fmt.Errorf("%w %q", ErrInvalidAPIURL, apiURL)
 	}
 
 	// If the URL already includes an explicit endpoint path, use it as-is.
@@ -123,6 +124,7 @@ func (m *Manager) probeTargets() ([]string, error) {
 	}
 
 	baseURL := strings.TrimRight(parsed.String(), "/")
+
 	return []string{baseURL + defaultProbePath}, nil
 }
 

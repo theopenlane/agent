@@ -25,11 +25,11 @@ add_finding() {
     local description="$3"
     local severity="$4"
     local status="${5:-open}"
-    
+
     FINDINGS+=("$(cat <<EOF
 {
   "resource": "$resource",
-  "title": "$title", 
+  "title": "$title",
   "description": "$description",
   "severity": "$severity",
   "status": "$status",
@@ -44,7 +44,7 @@ log_evidence() {
     local filename="$1"
     local content="$2"
     local evidence_file="$EVIDENCE_DIR/$filename"
-    
+
     echo "$content" > "$evidence_file"
     echo "Created evidence file: $evidence_file" >&2
 }
@@ -54,15 +54,15 @@ echo "Starting disk encryption compliance check..." >&2
 # Check if running on macOS
 if [[ "$OSTYPE" == "darwin"* ]]; then
     echo "Detected macOS system" >&2
-    
+
     # Check FileVault status
     filevault_status=$(fdesetup status 2>/dev/null || echo "FileVault is not enabled")
     log_evidence "filevault_status.txt" "$filevault_status"
-    
+
     # Get system information
     system_info=$(system_profiler SPHardwareDataType SPSoftwareDataType 2>/dev/null || echo "Unable to get system info")
     log_evidence "system_info.txt" "$system_info"
-    
+
     if echo "$filevault_status" | grep -q "FileVault is On"; then
         echo "✓ FileVault encryption is enabled" >&2
         add_finding "disk" "FileVault Enabled" "Full disk encryption is active via FileVault" "info"
@@ -72,11 +72,11 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         PASSED=false
         EXIT_CODE=1
     fi
-    
+
     # Check for external drives
     diskutil_info=$(diskutil list 2>/dev/null || echo "Unable to list disks")
     log_evidence "diskutil_list.txt" "$diskutil_info"
-    
+
     # Count external volumes that might be unencrypted
     external_count=$(echo "$diskutil_info" | grep -c "external" || true)
     if [[ $external_count -gt 0 ]]; then
@@ -86,7 +86,7 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 # Check if running on Linux
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     echo "Detected Linux system" >&2
-    
+
     # Check LUKS encryption status
     cryptsetup_status=""
     if command -v cryptsetup >/dev/null 2>&1; then
@@ -96,15 +96,15 @@ elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         cryptsetup_status="cryptsetup not available"
         log_evidence "cryptsetup_status.txt" "$cryptsetup_status"
     fi
-    
+
     # Check /proc/mounts for encrypted filesystems
     mounts_info=$(cat /proc/mounts 2>/dev/null || echo "Unable to read /proc/mounts")
     log_evidence "proc_mounts.txt" "$mounts_info"
-    
+
     # Check for dm-crypt devices
     dmsetup_info=$(dmsetup table 2>/dev/null || echo "dmsetup not available or no devices")
     log_evidence "dmsetup_table.txt" "$dmsetup_info"
-    
+
     # Simple heuristic: look for encrypted filesystems
     if echo "$mounts_info" | grep -q "/dev/mapper/"; then
         if echo "$dmsetup_info" | grep -q "crypt"; then
@@ -120,7 +120,7 @@ elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         PASSED=false
         EXIT_CODE=1
     fi
-    
+
     # Get disk information
     if command -v lsblk >/dev/null 2>&1; then
         lsblk_info=$(lsblk -f 2>/dev/null || echo "Unable to get block device info")
@@ -147,7 +147,7 @@ if command -v ip >/dev/null 2>&1; then
     ip_info=$(ip addr show 2>/dev/null || echo "ip command failed")
     log_evidence "network_interfaces.txt" "$ip_info"
 elif command -v ifconfig >/dev/null 2>&1; then
-    ifconfig_info=$(ifconfig 2>/dev/null || echo "ifconfig command failed") 
+    ifconfig_info=$(ifconfig 2>/dev/null || echo "ifconfig command failed")
     log_evidence "network_interfaces.txt" "$ifconfig_info"
 fi
 

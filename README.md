@@ -33,7 +33,7 @@ go build -o openlane-agent ./main.go
 ./openlane-agent config init --output agent.yaml
 ```
 
-2. Edit `agent.yaml` with your token, API URL, and checks.  
+2. Edit `agent.yaml` with your token, API URL, and checks.
    Minimal example:
 
 ```yaml
@@ -151,7 +151,7 @@ checks:
 
 ## Check Output Format
 
-Checks can emit plain text or JSON.  
+Checks can emit plain text or JSON.
 If valid JSON is returned, the agent can extract findings and metadata.
 
 Example JSON output:
