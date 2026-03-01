@@ -4,7 +4,7 @@ go 1.25.7
 
 require (
 	github.com/99designs/gqlgen v0.17.86
-	github.com/codeGROOVE-dev/retry v1.2.0
+	github.com/codeGROOVE-dev/retry v1.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gqlgo/gqlgenc v0.33.1
 	github.com/invopop/jsonschema v0.13.0
