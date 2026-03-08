@@ -16,7 +16,7 @@ require (
 	github.com/mcuadros/go-defaults v1.2.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.34.0
-	github.com/samber/lo v1.52.0
+	github.com/samber/lo v1.53.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.0
 	github.com/stretchr/testify v1.11.1
 	github.com/theopenlane/core/common v1.0.10
