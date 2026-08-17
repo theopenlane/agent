@@ -22,7 +22,7 @@ require (
 	github.com/theopenlane/core/common v1.0.10
 	github.com/theopenlane/go-client v0.8.5
 	github.com/theopenlane/utils v0.7.0
-	github.com/urfave/cli/v3 v3.6.2
+	github.com/urfave/cli/v3 v3.11.0
 	github.com/vektah/gqlparser/v2 v2.5.31
 	gopkg.in/yaml.v3 v3.0.1
 )
